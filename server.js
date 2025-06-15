@@ -14,6 +14,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // 2) handle socket connections
 io.on('connection', socket => {
   console.log('➕ client connected:', socket.id);
+  sendOnlyTo(socket.id, "mapData", {map, width: 40, height: 20})
 
   // Example: immediately spawn them at a random floor tile
   const x = Math.floor(Math.random() * 40);
@@ -33,8 +34,35 @@ io.on('connection', socket => {
     socket.broadcast.emit('playerLeft', socket.id);
   });
 });
+function sendOnlyTo(sockId, channel, payload) {
+  if (sockId) {
+    io.to(sockId).emit(channel, payload);
+  }
+}
+let maps = []
+let map = []
+let entities = {};
+function generateMap(height, width) {
+  map = [];
+  for (let y = 0; y < height; y++) {
+    const row = [];
+    for (let x = 0; x < width; x++) {
+      row.push({
+        base: (x === 0 || y === 0 || x === width - 1 || y === height - 1) ? '#' : '.',
+        top: [], bl: [], br: [],
+        color: (x === 0 || y === 0 || x === width - 1 || y === height - 1) ? '#444' : '#111',
+        name: (x === 0 || y === 0 || x === width - 1 || y === height - 1) ? 'Barrier' : 'Floor',
+        meta: {}
+      });
+    }
+    map.push(row);
+  }
+}
 
+(async ()=>{
+generateMap(20, 40)
 
+    })();
 
 server.listen(8000, () => {
   console.log('▶ listening on http://localhost:8000');
