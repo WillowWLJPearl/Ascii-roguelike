@@ -356,8 +356,7 @@ socket.on('mapData', data => {
 initFog(data.height, data.width)
   seen = data.map.seen
   fovMask = data.map.fovMask
-
-map = data.map.visibleMap
+map = data.map.map
 console.log(map)
 drawMap()
 })
@@ -373,7 +372,7 @@ socket.on('moveEntity', data => {
      updateCell(entities[changedEntity].x, entities[changedEntity].y);
 
 renderEntity(changedEntity, true)
-map = data.map
+map = data.map.map
 drawMap()
 })
 socket.on('clientPlayer', data => { 
@@ -389,6 +388,6 @@ document.addEventListener('keydown', e => {
   };
   if (dirMap[e.key]) {
     const [dx, dy] = dirMap[e.key];
-    socket.emit('move', { dx, dy });
+    socket.emit('move', { dx, dy, currentplayer });
   }
 });

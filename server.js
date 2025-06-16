@@ -51,20 +51,59 @@ function moveEntity(uid, dx, dy, width, height) {
     
   // — if we get here it’s free to move —
   // restore the old floor cell
-
-io.emit('moveEntity', {list: entities, changed: uid, map});
+sendOnlyTo(getEntityData(uid, 'socketId'), 'moveEntity',{list: entities, changed: uid, map: {seen: entities[uid].seen, fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}})
 }
 
+function isInFovOf(entity) {
+ Object.entries(entities).forEach(([id, e]) => {
+  if(e.fovMask[entity.y]?.[entity.x]) {
+    return {id, e}
+  }
+ })
+}
+function assembleBoolMap(newmapinfo, mainmap) {
+      const mapHeight = mainmap.length;
+  const mapWidth = mainmap[0]?.length || 0;
+  for (let y=0; y < mapHeight; y++){
+      for (let x=0; x < mapWidth; x++){   
+        if(newmapinfo[y]?.[x]) {
+          mainmap[x][y] = newmapinfo[x][y]
+        }
+      }
+  }
+  return mainmap
+}
+function generateEdgeTile(x, y) {
+  return {
+    char: '',
+    name: 'void',
+    type: ''
+  }
+}
+
+
+function getMapCell(currentMap, x, y) {
+  if (y >= 0 && y < currentMap.length && x >= 0 && x < currentMap[0].length) {
+    return currentMap[y][x];  // real tile
+  } else {
+    const key = `${x},${y}`;
+    if (!generatedEdges[key]) {
+      generatedEdges[key] = generateEdgeTile(x, y);
+    }
+    return generatedEdges[key];
+  }
+}
 function assembleVisibleMaps() {
-  revealFOV()
       const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
  Object.entries(entities).forEach(([id, e]) => {
+  revealFOV(id)
   for (let y=0; y < mapHeight; y++){
-      for (let x=0; y < mapWidth; x++){
+      for (let x=0; x < mapWidth; x++){   
         if(e.seen[y]?.[x]) {
-            console.log('send')
-          e.visibleMap = map[x][y]
+          if(map[y]?.[x]) {
+          e.visibleMap[y][x] = map[y][x]
+          }
         }
       }
   }
@@ -78,7 +117,7 @@ io.on('connection', socket => {
   setEntityData(newplayer, 'socketId', socket.id)
 
   assembleVisibleMaps()
-  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[getPlayerBySocket(socket.id)[0]].seen, inView : entities[getPlayerBySocket(socket.id)[0]].fovMask, map: entities[getPlayerBySocket(socket.id)[0]].visibleMap}, width: 40, height: 20})
+  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[newplayer].seen, fovMask : entities[newplayer].fovMask, map: entities[newplayer].visibleMap}, width: 40, height: 20})
 
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
@@ -89,9 +128,9 @@ io.on('connection', socket => {
   // broadcast join to others
  // socket.broadcast.emit('playerJoined', { id: socket.id, x, y, dir: 'down' });
 
-  socket.on('move', ({ dx, dy }) => {
-    
-    moveEntity(getPlayerBySocket(socket.id)[0], dx, dy, 40, 20)
+  socket.on('move', data => {
+    assembleVisibleMaps()
+    moveEntity(data.currentplayer, data.dx, data.dy, 40, 20)
   });
 
   socket.on('disconnect', () => {
@@ -111,16 +150,37 @@ function sendOnlyTo(sockId, channel, payload) {
 let maps = []
 let map = []
 let entities = {};
+
+
+function VisibleMapBase(width, height) {
+  let visibleMap = [];
+  for (let y = 0; y < height; y++) {
+    const row = [];
+    for (let x = 0; x < width; x++) {
+      row.push({
+        base:  '',
+        top: [], bl: [], br: [],
+        color: '#111',
+        name:  'Darkness',
+        meta: {}
+      });
+    }
+    visibleMap.push(row);
+  }
+  return visibleMap
+}
 function addEntity(type,x,y,char,color,overlays,name){
 
     const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
-
+  let visibleMap = VisibleMapBase(mapWidth, mapHeight)
   const uid = `${type}-${_nextEntityUID++}`;
   entities[uid] = {
-    visibleMap: Array(mapHeight).fill().map(() => Array(mapWidth).fill(null)),
-    seen: [],
-    fovMask: [],
+    visibleMap,
+  seen    : Array.from({length:mapHeight}, ()=>Array(mapWidth).fill(false)),
+  fovMask : Array.from({length:mapHeight}, ()=>Array(mapWidth).fill(false)),
+  lightMask : Array.from({length: mapHeight},()=>Array(mapWidth).fill(false)),
+  FOV_RADIUS: 6,
     type,
     x, y,
     char,
@@ -181,24 +241,30 @@ function inCone(dx, dy, dir) {
   const dot = nx * vx + ny * vy;
   return dot >= COS_HALF_CONE;
 }
-
+const DIR_VECTORS = {
+  up:    [ 0, -1],
+  right: [ 1,  0],
+  down:  [ 0,  1],
+  left:  [-1,  0],
+};
 function revealFOV(playerUid) {
   if (!playerUid || !entities[playerUid]) return;
-  clearFovMask();
-
+  clearFovMask(playerUid);
+  const height = map.length;
+  const width = map[0]?.length || 0;
   const p   = entities[playerUid];
   const px  = p.x, py = p.y, dir = p.dir;
 
   // always see your own tile
-  entities[playerUid].seen[py][px]    = true;
-  entities[playerUid].fovMask[py][px] = true;
-
+  
+  p.seen[py][px]    = true;
+  p.fovMask[py][px] = true;
   // cast rays in your cone (your existing Bresenham code) …
-  for (let dy = -FOV_RADIUS; dy <= FOV_RADIUS; dy++) {
-    for (let dx = -FOV_RADIUS; dx <= FOV_RADIUS; dx++) {
+  for (let dy = -p.FOV_RADIUS; dy <= p.FOV_RADIUS; dy++) {
+    for (let dx = -p.FOV_RADIUS; dx <= p.FOV_RADIUS; dx++) {
       const tx = px+dx, ty = py+dy;
       if (tx<0||tx>=width||ty<0||ty>=height) continue;
-      if (dx*dx + dy*dy > FOV_RADIUS*FOV_RADIUS) continue;
+      if (dx*dx + dy*dy > p.FOV_RADIUS*p.FOV_RADIUS) continue;
       if (!inCone(dx,dy,dir)) continue;
 
       const line = bresenhamLine(px,py,tx,ty);
@@ -225,8 +291,10 @@ function revealFOV(playerUid) {
 
 
 function clearFovMask(playerUid){
-  for(let y=0; y<height; y++){
-    for(let x=0; x<width; x++){
+        const mapHeight = map.length;
+  const mapWidth = map[0]?.length || 0;
+  for(let y=0; y<mapHeight; y++){
+    for(let x=0; x<mapWidth; x++){
       entities[playerUid].fovMask[y][x] = false;
     }
   }
