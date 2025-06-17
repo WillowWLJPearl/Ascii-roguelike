@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ASCII Roguelike</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #game {
+      display: grid;
+      width: 80vw;
+      height: 80vh;
+      background-color: #111;
+      grid-template-columns: repeat(20, 1fr);
+      grid-template-rows: repeat(10, 1fr);
+      gap: 1px;
+      font-family: monospace;
+      box-sizing: border-box;
+    }
+
+    .cell {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3vh;
+      color: #fff;
+    }
+
+    .overlay {
+      position: absolute;
+      font-size: 1.2vh;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .top { top: 0; left: 50%; transform: translateX(-50%); }
+    .bottom-left { bottom: 0; left: 0; }
+    .bottom-right { bottom: 0; right: 0; }
+  </style>
+</head>
+<body>
+  <div id="ui-panel">
+  <button id="wait">Wait</button>
+</div>
+
+  <div id="game"></div>
+<div id="hoverName" style="position:absolute; display:none; pointer-events:none; z-index:1000; color:#fff; background:#222; padding:2px 8px; border-radius:6px; font-size:1em"></div>
+<div id="sideInfo" style="position:fixed; right:20px; top:20px; background:#222; color:#fff; min-width:180px; max-width:300px; min-height:60px; max-height:340px; padding:12px; border-radius:10px; display:none; z-index:2000; overflow:auto;">
+  <button id="nextLayer" style="float:right; margin-left:10px; margin-bottom:5px;">Next Layer</button>
+  <div id="sideTitle" style="font-weight:bold; margin-bottom:8px; margin-top:2px;"></div>
+  <div id="sideBody"></div>
+</div>
+    <!-- #1: this is auto-served by socket.io attached to our Express http server -->
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- #2: your game client logic (no imports) -->
+    <script src="server_view.js"></script>
+</div>
+
+</body>
+</html>

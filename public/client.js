@@ -12,7 +12,78 @@ let _nextEntityUID = 1;
 let typeIndex = {}; 
 let currentplayer
 let drawMapToggle = false
+let lastMessageSend = 0
+let lastMessageReceived = 0
+/*
+function eq(a,b) { return JSON.stringify(a) === JSON.stringify(b); }
 
+// call this instead of drawMap()/drawViewport() directly
+function diffAndRender( map, seen, fovMask, lightMask, entities ) {
+  const h = map.length, w = map[0].length;
+  // 1) map diff:
+  if (prevMap) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const oldCell = prevMap[y][x];
+        const newCell =   map[y][x];
+        // compare base, color or overlays:
+        if (oldCell.base   !== newCell.base ||
+            oldCell.color  !== newCell.color ||
+            !eq(oldCell.top, newCell.top) ||
+            !eq(oldCell.bl,  newCell.bl)  ||
+            !eq(oldCell.br,  newCell.br) ) {
+          updateCell(x,y);
+        }
+      }
+    }
+  } else {
+    // first time, just draw everything
+    drawMap();
+  }
+
+  // 2) entities diff:
+  if (prevEntities) {
+    // removed entities
+    for (let id in prevEntities) {
+      if (!(id in entities)) {
+        document.getElementById(`entity-${id}`)?.remove();
+      }
+    }
+    // added or moved entities
+    for (let id in entities) {
+      const e = entities[id];
+      const old = prevEntities[id];
+      if (!old) {
+        // brand new
+        addEntity(e.type, e.x, e.y, e.char, e.color, { top:e.top, bl:e.bl, br:e.br }, e.name);
+      } else {
+        // existed before → did it move?
+        if (old.x !== e.x || old.y !== e.y) {
+          // clear old spot
+          updateCell(old.x, old.y);
+          document.getElementById(`entity-${id}`)?.remove();
+          // draw at new
+          renderEntity(id);
+        }
+        // did its overlays or color change?
+        if (!eq(old.top, e.top) || !eq(old.bl, e.bl) || !eq(old.br, e.br) || old.color !== e.color) {
+          renderEntity(id, true);
+        }
+      }
+    }
+  } else {
+    // first time
+    Object.keys(entities).forEach(id => renderEntity(id));
+  }
+
+  // 3) store current as “previous”
+  prevMap       = JSON.parse(JSON.stringify(map));
+  prevSeen      = JSON.parse(JSON.stringify(seen));
+  prevFovMask   = JSON.parse(JSON.stringify(fovMask));
+  prevLightMask = JSON.parse(JSON.stringify(lightMask));
+  prevEntities  = JSON.parse(JSON.stringify(entities));
+}
+*/
 function updateCell(x, y) {
   const cell = document.getElementById(`cell-${x}-${y}`);
   if (!cell) return;
@@ -35,13 +106,17 @@ Object.entries(entities).forEach(([id, e]) => {
   }
 })
 }
-function drawViewport(){
+function drawViewport(rendermap = false){
   const p = entities[currentplayer];
+ // if(rendermap) {
   if(!drawMapToggle) {
   drawRegion(p.x-8, p.y-6, 17, 13);
   } else {
     drawMap()
   }
+ // } else {
+ //   diffAndRender(map, seen, fovMask, lightMask, entities)
+ // }
 }
 function getUIDsByType(type){
   return typeIndex[type]||[];
@@ -342,11 +417,27 @@ lightMask = data.map.lightMask
   fovMask = data.map.fovMask
 map = data.map.map
 
-drawViewport()
+drawViewport(true)
 })
 socket.on('entityData', data => { 
 
 entities = data.list
+drawViewport(true)
+})
+
+//{map: {lightMask: entities[uid].lightMask, seen: entities[uid].seen, fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight}
+socket.on('mapNEntityData', data => { 
+  messageReceived()
+
+entities = data.list
+
+if(entities[currentplayer]?.lightMask) {
+lightMask = entities[currentplayer].lightMask
+}
+  seen = entities[currentplayer].seen
+  fovMask = entities[currentplayer].fovMask
+map = entities[currentplayer].visibleMap
+
 drawViewport()
 })
 socket.on('moveEntity', data => { 
@@ -355,14 +446,29 @@ socket.on('moveEntity', data => {
     document.getElementById(changedEntity)?.remove();
      updateCell(entities[changedEntity].x, entities[changedEntity].y);
 
-renderEntity(changedEntity, true)
+//renderEntity(changedEntity, true)
 map = data.map.map
 drawViewport()
 })
 
 socket.on('clientPlayer', data => { 
 currentplayer = data
+setInterval(checkTps, 1000);
 })
+function checkTps() {
+lastMessageReceived++
+lastMessageSend++
+}
+function messageSend() {
+lastMessageSend = 0
+lastMessageReceived= 0
+}
+function messageReceived() {
+  console.log(`Tps: ${lastMessageReceived - lastMessageSend}`)
+lastMessageReceived = 0
+lastMessageSend= 0
+
+}
 // send our moves to the server
 document.addEventListener('keydown', e => {
   const dirMap = {
@@ -379,11 +485,15 @@ document.addEventListener('keydown', e => {
 
   if (e.shiftKey) {
     socket.emit('turn', { dir, currentplayer });
+    socket.emit('commitData');
+    messageSend()
   } else {
     const dx = dir==='left' ? -1 : dir==='right' ? 1 : 0;
     const dy = dir==='up'   ? -1 : dir==='down'  ? 1 : 0;
     socket.emit('move', { dx, dy, currentplayer });
     socket.emit('turn', { dir, currentplayer });
+    socket.emit('commitData');
+    messageSend()
   }
 });
 
@@ -391,7 +501,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'm' || e.key === 'M') {
     // do whatever “M” should do
     if(drawMapToggle) {drawMapToggle = false} else {drawMapToggle = true}
-    drawViewport()
+    drawViewport(true)
     return;
   }
     if (e.code === 'Space') {

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Canvas‐based Roguelike</title>
+  <style>
+html, body {
+  margin:0; padding:0; height:100%; width:100%;
+  background:#000;
+}
+#game-container {
+  position: relative;
+  width: 80vw;
+  height: 80vh;
+  margin: auto;
+  background: #111;
+  overflow: hidden;
+}
+/* canvases are stacked and centred, but never stretched */
+canvas {
+  position: absolute;
+  top: 50%;  left: 50%;
+  transform: translate(-50%, -50%);
+  /* no width / height rules here */
+  image-rendering: pixelated;   /* crisp ASCII */
+}
+#entityCanvas,
+#fogCanvas {
+  pointer-events: none;
+}
+#mapCanvas {
+  pointer-events: auto;
+}
+
+
+
+    
+  </style>
+</head>
+<body>
+    <div id="hoverName" style="
+  position:absolute;
+  display:none;
+  pointer-events:none;
+  z-index:1000;
+  color:#fff;
+  background:#222;
+  padding:2px 8px;
+  border-radius:6px;
+  font-size:1em;
+"></div>
+
+<div id="sideInfo" style="
+  position:fixed;
+  right:20px; top:20px;
+  background:#222; color:#fff;
+  min-width:180px; max-width:300px;
+  min-height:60px; max-height:340px;
+  padding:12px; border-radius:10px;
+  display:none; z-index:2000; overflow:auto;
+">
+  <button id="nextLayer" style="
+    float:right; margin-left:10px; margin-bottom:5px;
+    background:#333; color:#fff; border:none;
+    border-radius:6px; padding:2px 8px;
+    cursor:pointer;
+  ">Next Layer</button>
+  <div id="sideTitle" style="font-weight:bold; margin-bottom:8px;"></div>
+  <div id="sideBody"></div>
+</div>
+
+  <div id="game-container">
+    <canvas id="mapCanvas"></canvas>
+    <canvas id="entityCanvas"></canvas>
+    <canvas id="fogCanvas"></canvas>
+  </div>
+
+  <!-- your socket.io script + client.js below -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="newclient.js"></script>
+</body>
+</html>
