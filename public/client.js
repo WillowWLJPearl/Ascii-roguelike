@@ -1,6 +1,6 @@
 // client.js
 const socket = io();  // <-- global `io` from /socket.io/socket.io.js
-let debugNoFog = true;
+let debugNoFog = false;
 let map = [];
 let entities = {};
 let myId = null;
@@ -11,6 +11,7 @@ let entityVisuals = {};
 let _nextEntityUID = 1;
 let typeIndex = {}; 
 let currentplayer
+let drawMapToggle = false
 
 function updateCell(x, y) {
   const cell = document.getElementById(`cell-${x}-${y}`);
@@ -36,7 +37,11 @@ Object.entries(entities).forEach(([id, e]) => {
 }
 function drawViewport(){
   const p = entities[currentplayer];
+  if(!drawMapToggle) {
   drawRegion(p.x-8, p.y-6, 17, 13);
+  } else {
+    drawMap()
+  }
 }
 function getUIDsByType(type){
   return typeIndex[type]||[];
@@ -328,6 +333,37 @@ if (!debugNoFog) {
 
   return cell;
 }
+socket.on('mapData', data => { 
+initFog(data.height, data.width)
+if(data.map?.lightMask) {
+lightMask = data.map.lightMask
+}
+  seen = data.map.seen
+  fovMask = data.map.fovMask
+map = data.map.map
+
+drawViewport()
+})
+socket.on('entityData', data => { 
+
+entities = data.list
+drawViewport()
+})
+socket.on('moveEntity', data => { 
+  let changedEntity = data.changed 
+  entities = data.list
+    document.getElementById(changedEntity)?.remove();
+     updateCell(entities[changedEntity].x, entities[changedEntity].y);
+
+renderEntity(changedEntity, true)
+map = data.map.map
+drawViewport()
+})
+
+socket.on('clientPlayer', data => { 
+currentplayer = data
+})
+// send our moves to the server
 document.addEventListener('keydown', e => {
   const dirMap = {
     ArrowUp:    'up',
@@ -338,56 +374,28 @@ document.addEventListener('keydown', e => {
   const dir = dirMap[e.key];
   if (!dir) return;
 
-  const pUid = getActivePlayer();
+  const pUid = currentplayer
   if (!pUid) return;
 
   if (e.shiftKey) {
-    //turnEntity(pUid, dir);
-    //revealFOV(pUid);
+    socket.emit('turn', { dir, currentplayer });
   } else {
     const dx = dir==='left' ? -1 : dir==='right' ? 1 : 0;
     const dy = dir==='up'   ? -1 : dir==='down'  ? 1 : 0;
-    socket.emit('move', { dx, dy });
-   // turnEntity(pUid, dir);
-  //  revealFOV(pUid);
+    socket.emit('move', { dx, dy, currentplayer });
+    socket.emit('turn', { dir, currentplayer });
   }
 });
-socket.on('mapData', data => { 
-initFog(data.height, data.width)
-  seen = data.map.seen
-  fovMask = data.map.fovMask
-map = data.map.map
-console.log(map)
-drawMap()
-})
-socket.on('entityData', data => { 
 
-entities = data.list
-drawMap()
-})
-socket.on('moveEntity', data => { 
-  let changedEntity = data.changed 
-  entities = data.list
-    document.getElementById(changedEntity)?.remove();
-     updateCell(entities[changedEntity].x, entities[changedEntity].y);
-
-renderEntity(changedEntity, true)
-map = data.map.map
-drawMap()
-})
-socket.on('clientPlayer', data => { 
-currentplayer = data
-})
-// send our moves to the server
 document.addEventListener('keydown', e => {
-  const dirMap = {
-    ArrowUp:    [0, -1],
-    ArrowDown:  [0,  1],
-    ArrowLeft:  [-1, 0],
-    ArrowRight: [1,  0]
-  };
-  if (dirMap[e.key]) {
-    const [dx, dy] = dirMap[e.key];
-    socket.emit('move', { dx, dy, currentplayer });
+  if (e.key === 'm' || e.key === 'M') {
+    // do whatever “M” should do
+    if(drawMapToggle) {drawMapToggle = false} else {drawMapToggle = true}
+    drawViewport()
+    return;
+  }
+    if (e.code === 'Space') {
+    socket.emit('wait', { currentplayer });
+    return;
   }
 });
