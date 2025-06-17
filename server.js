@@ -27,12 +27,20 @@ function moveEntity(uid, dx, dy, width, height) {
   if (!e) return;
   const nx = e.x + dx, ny = e.y + dy;
 
-  // 1) out of bounds?
-  if (nx < 0 || nx >= width || ny < 0 || ny >= height) return;
 
+    let cell = map[ny][nx];
+  // 1) out of bounds?
+  if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+    generateProceduralMap('overworld', 32, 32, {y: ny, x: nx})
+  map = maps['overworld'].map.chunks[maps['overworld'].map.chunks.length-1].data
+    
+
+  console.log(height-e.y, width-e.x)
+  cell = map[height-e.y][width-e.x]
+  };
+  console.log(cell)
   // 2) tile‐based blockage
-  const cell = map[ny][nx];
-  if (blockBases.includes(cell.base)) return;
+ // if (blockBases.includes(cell.base)) return;
 
   // 3) map‐overlay statuses (e.g. S, …)
   if (cell.top.some(s => blockStatuses.includes(s))) return;
@@ -133,7 +141,7 @@ io.on('connection', socket => {
   setEntityData(newplayer, 'socketId', socket.id)
 
   assembleVisibleMaps()
-  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[newplayer].seen, fovMask : entities[newplayer].fovMask, map: entities[newplayer].visibleMap}, width: 40, height: 20})
+  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[newplayer].seen, fovMask : entities[newplayer].fovMask, map: entities[newplayer].visibleMap}, width: 32, height: 32})
 
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
@@ -149,7 +157,7 @@ io.on('connection', socket => {
   })
   socket.on('move', data => {
     assembleVisibleMaps()
-    moveEntity(data.currentplayer, data.dx, data.dy, 40, 20)
+    moveEntity(data.currentplayer, data.dx, data.dy, 32, 32)
     updateClientMapNEntityData(data.currentplayer)
     TickManager(map)
   });
@@ -204,7 +212,7 @@ function sendOnlyTo(sockId, channel, payload) {
     io.to(sockId).emit(channel, payload);
   }
 }
-let maps = []
+let maps = {}
 let map = []
 let entities = {};
 
@@ -268,7 +276,33 @@ function generateMap(height, width) {
     map.push(row);
   }
 }
-
+function generateProceduralMap(id, height, width, chunk) {
+  let data = []
+  for (let y = 0; y < height; y++) {
+    const row = [];
+    for (let x = 0; x < width; x++) {
+      row.push({
+        base: '.',
+        top: [], bl: [], br: [],
+        color: (x === 0 || y === 0 || x === width - 1 || y === height - 1) ? '#444' : '#111',
+        name: 'Floor',
+        meta: {}
+      });
+    }
+    data.push(row);
+  }
+  if(!maps){
+     maps = {}
+  }
+    if(!maps[id]){
+     maps[id] = {map:{}, type: id}
+  }
+      if(!maps[id].map.chunks){
+    maps[id].map = {chunks: []};
+  }
+  let chunks = maps[id].map.chunks
+  chunks.push({x: chunk.x, y: chunk.y, data})
+}
 // half-angle of cone in radians (45° here)
 const HALF_CONE_RAD = Math.PI / 4;
 const COS_HALF_CONE = Math.cos(HALF_CONE_RAD);
@@ -616,7 +650,8 @@ function TorchPlacer(currentMap, x, y, cell) {
   }
 }
 (async ()=>{
-generateMap(20, 40)
+generateProceduralMap('overworld', 32, 32, {x: 0, y: 0})
+map = maps['overworld'].map.chunks[0].data
 
 
   generateMapContentsCircular(map, roomCarverPopulator);
