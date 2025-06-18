@@ -162,41 +162,71 @@ function drawBaseMap() {
 
 
 
-function drawEntities() {
+function drawEntities(playerId = currentplayer) {
+  // grab the player so we know the center
+  const P = entities[playerId];
+  const pWX = P.cx*chunkWidth + P.x;
+  const pWY = P.cy*chunkHeight + P.y;
+
+  const halfW = Math.floor(chunkWidth  / 2);
+  const halfH = Math.floor(chunkHeight / 2);
+
   entityCtx.resetTransform();
   entityCtx.clearRect(0,0,entityCanvas.width,entityCanvas.height);
   applyCam(entityCtx);
   entityCtx.textAlign = 'center';
   entityCtx.textBaseline = 'middle';
 
-  for (let id in entities) {
-    const e = entities[id];
-    if (!debugNoFog && !(fovMask[e.y][e.x] || lightMask[e.y][e.x]))
-      continue;
+  for (const id in entities) {
+    if (id === playerId) continue;  // draw yourself last (or skip)
 
-    // sprite check
-    let sprite = null;
+    const e = entities[id];
+    // 1) world‐coords of entity
+    const wX = e.cx*chunkWidth  + e.x;
+    const wY = e.cy*chunkHeight + e.y;
+
+    // 2) relative to player’s center in mask‐space
+    const rX = wX - pWX + halfW;
+    const rY = wY - pWY + halfH;
+
+    // 3) skip if outside the 32×32 window
+    if (rX < 0 || rX >= chunkWidth || rY < 0 || rY >= chunkHeight) continue;
+
+    // 4) skip if fogged out
+    if (!debugNoFog && !(fovMask[rY][rX] || lightMask[rY][rX])) continue;
+
+    // 5) now draw at world‐tile (applyCam already offsets it)
     if (atlasReady) {
+      let sprite;
       for (const rule of spriteRules) {
         const r = rule({ base: e.char, top: e.top }, e.x, e.y);
         if (r) { sprite = r; break; }
       }
+      if (sprite) {
+        const [sx,sy] = sprite;
+        entityCtx.drawImage(
+          atlas,
+          sx * TILE, sy * TILE, TILE, TILE,
+          wX, wY, 1, 1
+        );
+        continue;
+      }
     }
 
-    if (sprite) {
-      const [sx,sy] = sprite;
- entityCtx.drawImage(
-   atlas,
-   sx * TILE, sy * TILE, TILE, TILE,
-   e.x, e.y, 1, 1
- );
-    } else {
-      entityCtx.font = `0.8px monospace`;
-      entityCtx.fillStyle = e.color;
- entityCtx.fillText(e.char, e.x + 0.5, e.y + 0.5);
-    }
+    // fallback to text
+    entityCtx.font = `0.8px monospace`;
+    entityCtx.fillStyle = e.color;
+    entityCtx.fillText(e.char, wX + 0.5, wY + 0.5);
   }
+
+  // finally draw the player on top
+  const centerX = P.x + P.cx*chunkWidth;
+  const centerY = P.y + P.cy*chunkHeight;
+  entityCtx.font = `0.8px monospace`;
+  entityCtx.fillStyle = P.color;
+  entityCtx.fillText(P.char, centerX + 0.5, centerY + 0.5);
 }
+
 const chunkHeight = 32
 const chunkWidth = 32
 
@@ -334,7 +364,8 @@ socket.on('mapNEntityData', data => {
   messageReceived()
 
 entities = data.list
-
+entities[currentplayer].x = 16
+entities[currentplayer].y = 16
   seen = entities[currentplayer].seen['overworld']
   fovMask = entities[currentplayer].fovMask
 map = entities[currentplayer].visibleMap

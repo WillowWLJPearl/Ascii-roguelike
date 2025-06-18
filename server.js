@@ -531,46 +531,43 @@ function revealFOV(playerUid) {
     }
   }
 
-  // center of the window
   const cy = Math.floor(H/2);
   const cx = Math.floor(W/2);
 
-  // 1) you always see your own tile
+  // see your own tile
   p.fovMask[cy][cx] = true;
-  markGlobalSeen(p, 0, 0);      // see helper below
+  markGlobalSeen(playerUid, 0, 0);
 
-  // 2) cast rays in a circle of radius R
+  // cast rays…
   for (let dy = -R; dy <= R; dy++) {
     for (let dx = -R; dx <= R; dx++) {
       if (dx*dx + dy*dy > R*R) continue;
       if (!inCone(dx, dy, p.dir)) continue;
 
-      const tx = cx + dx;
-      const ty = cy + dy;
+const tx = cx - dx;
+const ty = cy - dy;
+
       if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
 
-      // walk the line from center→(tx,ty)
       const line = bresenhamLine(cx, cy, tx, ty);
       let blocked = false;
       for (let i = 0; i < line.length; i++) {
         const [lx, ly] = line[i];
 
-        // mark seen in the correct chunk
-        markGlobalSeen(p, lx - cx, ly - cy);
-
-        // first non-blocked tile is in FOV
+        // now pass the UID in
+markGlobalSeen(playerUid, cx - lx, cy - ly);
         if (!blocked) {
           p.fovMask[ly][lx] = true;
         }
 
-        // check if this tile blocks vision
         const cell = calculateRelativeChunk(
           p.map, p.cy, p.cx, p.y, p.x
         )[ly][lx];
+
         if (
           blockBases.includes(cell.base) ||
           cell.top.some(s => blockStatuses.includes(s)) ||
-          cell.br .some(t => blockTypes   .includes(t))
+          cell.br.some(t => blockTypes.includes(t))
         ) {
           blocked = true;
           break;
@@ -580,17 +577,21 @@ function revealFOV(playerUid) {
   }
 }
 
-// helper to record “seen” back into your per-chunk seen cache
-function markGlobalSeen(p, relX, relY) {
-  // relX,relY are offsets from center
+
+/**
+ * Mark a single “seen” tile for entity `uid`, given window‐relative offsets.
+ */
+function markGlobalSeen(uid, relX, relY) {
+  const p = entities[uid];
   const worldX = p.cx*chunkWidth  + p.x + relX;
   const worldY = p.cy*chunkHeight + p.y + relY;
+
   const ncx = Math.floor(worldX / chunkWidth);
   const ncy = Math.floor(worldY / chunkHeight);
   const lx  = ((worldX % chunkWidth)  + chunkWidth)  % chunkWidth;
   const ly  = ((worldY % chunkHeight) + chunkHeight) % chunkHeight;
 
-  const seenChunk = getSeenArrayOfChunk(p.uid, p.map, ncx, ncy);
+  const seenChunk = getSeenArrayOfChunk(uid, p.map, ncx, ncy);
   seenChunk.data[ly][lx] = true;
 }
 
