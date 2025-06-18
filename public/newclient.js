@@ -290,6 +290,7 @@ document.addEventListener('keydown', e => {
    seen      = data.map.seen;
    fovMask   = data.map.fovMask;
    lightMask = data.map.lightMask;
+   console.log(data.map.map)
    resetCamera()
    drawBaseMap();
    renderLoop();
@@ -334,7 +335,7 @@ socket.on('mapNEntityData', data => {
 
 entities = data.list
 
-  seen = entities[currentplayer].seen
+  seen = entities[currentplayer].seen['overworld']
   fovMask = entities[currentplayer].fovMask
 map = entities[currentplayer].visibleMap
 if(entities[currentplayer]?.lightMask) {

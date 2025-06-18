@@ -416,7 +416,6 @@ lightMask = data.map.lightMask
   seen = data.map.seen
   fovMask = data.map.fovMask
 map = data.map.map
-
 drawViewport(true)
 })
 socket.on('entityData', data => { 

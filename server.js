@@ -77,19 +77,52 @@ function moveEntity(uid, dx, dy) {
 
 
 
-function entitiesInFovOf(viewer) {
-  let idList = entityIdsInFov(viewer)
-  let newentitieslist = {}
-  idList.forEach(id => {
-    newentitieslist[id] = entities[id]
-  })
-  return newentitieslist
-}
 function entityIdsInFov(viewer) {
-  return Object.entries(entities)
-    .filter(([uid, e]) => (viewer.fovMask[e.y]?.[e.x] || viewer.lightMask[e.y]?.[e.x]))
-    .map(([uid]) => uid);
+  const ids = [];
+  const halfW = Math.floor(chunkWidth  / 2);
+  const halfH = Math.floor(chunkHeight / 2);
+
+  // viewer world coords
+  const vwx = viewer.cx * chunkWidth  + viewer.x;
+  const vwy = viewer.cy * chunkHeight + viewer.y;
+
+  for (const [uid, e] of Object.entries(entities)) {
+    // skip ourselves
+    if (uid === viewer.uid) continue;
+
+    // entity world coords
+    const ewx = e.cx * chunkWidth  + e.x;
+    const ewy = e.cy * chunkHeight + e.y;
+
+    // relative offset from viewer
+    const dx = ewx - vwx;
+    const dy = ewy - vwy;
+
+    // map into viewer.fovMask/lightMask indices
+    const rx = dx + halfW;
+    const ry = dy + halfH;
+
+    // must fall inside your mask
+    if (
+      rx >= 0 && rx < chunkWidth &&
+      ry >= 0 && ry < chunkHeight &&
+      (viewer.fovMask[ry]?.[rx] || viewer.lightMask[ry]?.[rx])
+    ) {
+      ids.push(uid);
+    }
+  }
+  return ids;
 }
+
+function entitiesInFovOf(viewer) {
+  const list = {};
+  for (const uid of entityIdsInFov(viewer)) {
+    list[uid] = entities[uid];
+  }
+  return list;
+}
+
+
 function assembleBoolMap(newmapinfo, mainmap) {
       const mapHeight = mainmap.length;
   const mapWidth = mainmap[0]?.length || 0;
@@ -123,22 +156,43 @@ function getMapCell(currentMap, x, y) {
   }
 }
 function assembleVisibleMaps(mapId = 'overworld') {
-      const mapHeight = chunkHeight
-  const mapWidth = chunkWidth
- Object.entries(entities).forEach(([id, e]) => {
-   let relativeMap = calculateRelativeChunk(mapId, e.cy, e.cx, e.y, e.x)
-  revealFOV(id)
-  for (let y=0; y < mapHeight; y++){
-      for (let x=0; x < mapWidth; x++){   
-        if(e.seen[y]?.[x]) {
-          if(relativeMap[y]?.[x]) {
-          e.visibleMap[y][x] = relativeMap[y][x]
+  const mapH = chunkHeight, mapW = chunkWidth;
+  const halfH = Math.floor(chunkHeight/2);
+  const halfW = Math.floor(chunkWidth /2);
+
+  Object.values(entities).forEach(e => {
+    // 1) build the full 32×32 window of real tiles around the player
+    const rel = calculateRelativeChunk(mapId, e.cy, e.cx, e.y, e.x);
+
+    // 2) clear visibleMap to darkness
+    e.visibleMap = VisibleMapBase(mapW, mapH);
+
+    // 3) iterate every seen‐chunk for this entity & map
+    const seenChunks = e.seen[mapId]?.map?.chunks || [];
+    for (const { x: scx, y: scy, data: seenMat } of seenChunks) {
+      // for each tile in that chunk
+      for (let ly = 0; ly < mapH; ly++) {
+        for (let lx = 0; lx < mapW; lx++) {
+          if (!seenMat[ly][lx]) continue;
+
+          // world‐coords of that seen tile
+          const wy = scy*mapH + ly;
+          const wx = scx*mapW + lx;
+
+          // convert to relative window coords [0..31]
+          const ry = wy - (e.cy*mapH + e.y) + halfH;
+          const rx = wx - (e.cx*mapW + e.x) + halfW;
+
+          // if it falls inside our 32×32 view, copy the real tile
+          if (ry >= 0 && ry < mapH && rx >= 0 && rx < mapW) {
+            e.visibleMap[ry][rx] = rel[ry][rx];
           }
         }
       }
-  }
-})
+    }
+  });
 }
+
 
 const buffers = new Map();
 // 2) handle socket connections
@@ -160,7 +214,7 @@ io.on('connection', socket => {
   setEntityData(newplayer, 'socketId', socket.id)
 
   assembleVisibleMaps()
-  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[newplayer].seen[entities[newplayer].map], fovMask : entities[newplayer].fovMask, map: entities[newplayer].visibleMap}, width: 32, height: 32})
+  sendOnlyTo(socket.id, "mapData", {map: {seen: entities[newplayer].seen[entities[newplayer].map],trueMapping: trueMappingWithSeenMapping(entities[newplayer].seen, maps, entities[newplayer].map), fovMask : entities[newplayer].fovMask, map: entities[newplayer].visibleMap}, width: 32, height: 32})
 
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
@@ -262,12 +316,18 @@ sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFo
 sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovOf(entities[uid]), changed: uid})
   }
 */
-
+  revealFOV(uid)
+  entities[uid].fovMask.forEach(y => {y.forEach(x => {
+    if(x) {
+      console.log(x)
+    }
+  })})
   if(protocol === 'noAction') {
     sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovOf(entities[uid]), changed: uid})
-sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[uid].lightMask, seen: entities[uid].seen[entities[uid].map], fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight} )
+sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[uid].lightMask, trueMapping: trueMappingWithSeenMapping(entities[uid].seen, maps, entities[uid].map),seen: entities[uid].seen[entities[uid].map], fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight} )
   } else
     if(protocol ==='lightweight') {
+      console.log(entitiesInFovOf(entities[uid]))
     sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovOf(entities[uid]), changed: uid})
   }
 }
@@ -459,37 +519,58 @@ assembleBoolMap(array, seen[mapId].map.chunks.find(sc =>
 }
 function revealFOV(playerUid) {
   if (!playerUid || !entities[playerUid]) return;
-  clearFovMask(playerUid);
-  const height = chunkHeight
-  const width = chunkWidth
-  const p   = entities[playerUid];
-  const px  = p.x, py = p.y, dir = p.dir;
+  const p = entities[playerUid];
+  const H = chunkHeight, W = chunkWidth;
+  const R = p.FOV_RADIUS;
 
-  // always see your own tile
-let currentSeenChunk = getSeenArrayOfChunk(playerUid, p.map, p.cx, p.cy);
-currentSeenChunk.data[py][px] = true;
-  p.fovMask[py][px] = true;
-  // cast rays in your cone (your existing Bresenham code) …
-  for (let dy = -p.FOV_RADIUS; dy <= p.FOV_RADIUS; dy++) {
-    for (let dx = -p.FOV_RADIUS; dx <= p.FOV_RADIUS; dx++) {
-      const tx = px+dx, ty = py+dy;
-      if (tx<0||tx>=width||ty<0||ty>=height) continue;
-      if (dx*dx + dy*dy > p.FOV_RADIUS*p.FOV_RADIUS) continue;
-      if (!inCone(dx,dy,dir)) continue;
+  // clear masks
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      p.fovMask[y][x]   = false;
+      p.lightMask[y][x] = false;
+    }
+  }
 
-      const line = bresenhamLine(px,py,tx,ty);
+  // center of the window
+  const cy = Math.floor(H/2);
+  const cx = Math.floor(W/2);
+
+  // 1) you always see your own tile
+  p.fovMask[cy][cx] = true;
+  markGlobalSeen(p, 0, 0);      // see helper below
+
+  // 2) cast rays in a circle of radius R
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      if (dx*dx + dy*dy > R*R) continue;
+      if (!inCone(dx, dy, p.dir)) continue;
+
+      const tx = cx + dx;
+      const ty = cy + dy;
+      if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
+
+      // walk the line from center→(tx,ty)
+      const line = bresenhamLine(cx, cy, tx, ty);
       let blocked = false;
-      for (let i = 1; i < line.length; i++) {
-        const [cx,cy] = line[i];
-        currentSeenChunk.data[cy][cx] = true;
+      for (let i = 0; i < line.length; i++) {
+        const [lx, ly] = line[i];
+
+        // mark seen in the correct chunk
+        markGlobalSeen(p, lx - cx, ly - cy);
+
+        // first non-blocked tile is in FOV
         if (!blocked) {
-          entities[playerUid].fovMask[cy][cx] = true;
+          p.fovMask[ly][lx] = true;
         }
-        const cell = calculateRelativeChunk('overworld',p.cy, p.cx, p.y,p.x)[cy][cx];
+
+        // check if this tile blocks vision
+        const cell = calculateRelativeChunk(
+          p.map, p.cy, p.cx, p.y, p.x
+        )[ly][lx];
         if (
-             blockBases   .includes(cell.base)
-          || cell.top   .some(s => blockStatuses.includes(s))
-          || cell.br    .some(t => blockTypes.includes(t))
+          blockBases.includes(cell.base) ||
+          cell.top.some(s => blockStatuses.includes(s)) ||
+          cell.br .some(t => blockTypes   .includes(t))
         ) {
           blocked = true;
           break;
@@ -498,6 +579,21 @@ currentSeenChunk.data[py][px] = true;
     }
   }
 }
+
+// helper to record “seen” back into your per-chunk seen cache
+function markGlobalSeen(p, relX, relY) {
+  // relX,relY are offsets from center
+  const worldX = p.cx*chunkWidth  + p.x + relX;
+  const worldY = p.cy*chunkHeight + p.y + relY;
+  const ncx = Math.floor(worldX / chunkWidth);
+  const ncy = Math.floor(worldY / chunkHeight);
+  const lx  = ((worldX % chunkWidth)  + chunkWidth)  % chunkWidth;
+  const ly  = ((worldY % chunkHeight) + chunkHeight) % chunkHeight;
+
+  const seenChunk = getSeenArrayOfChunk(p.uid, p.map, ncx, ncy);
+  seenChunk.data[ly][lx] = true;
+}
+
 function getChunkByMapId(mapId, cx, cy) {
   const mapObj = maps[mapId];
   if (!mapObj) throw new Error(`map "${mapId}" not found`);
@@ -672,7 +768,32 @@ function countCellsByChar(char) {
 function getTotalCells() {
   return map.length * (map[0]?.length || 0);
 }
+function trueMappingWithSeenMapping(seenMapping, fullMaps, mapId) {
+  const seenChunks = seenMapping[mapId]?.map?.chunks || [];
+  const fullChunks = fullMaps[mapId]?.map?.chunks || [];
 
+  const trueMapping = { map: { chunks: [] } };
+
+  for (const fullChunk of fullChunks) {
+    const { x: cx, y: cy, data: tileData } = fullChunk;
+
+    // find the corresponding seen-chunk (if any)
+    const seenEntry = seenChunks.find(sc => sc.x === cx && sc.y === cy);
+    const seenData  = seenEntry?.data;  // a chunkHeight×chunkWidth bool array
+
+    // build masked data
+    const masked = tileData.map((row, yy) =>
+      row.map((cell, xx) => {
+        // only show `cell` if seenData exists *and* seenData[yy][xx] is true
+        return (seenData && seenData[yy]?.[xx]) ? cell : false;
+      })
+    );
+
+    trueMapping.map.chunks.push({ x: cx, y: cy, data: masked });
+  }
+
+  return trueMapping;
+}
 
 function generateMapContentsCircular(currentMap, cb) {
       const height = currentMap.length;
