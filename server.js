@@ -22,6 +22,29 @@ function getEntityData(id, key) {
 const blockBases    = ['#'];
 const blockStatuses = ['S'];
 const blockTypes    = ['W'];
+/**
+ * Shift a H×W boolean mask by (dx,dy):
+ *  - dx>0 moves everything right; dx<0 moves left
+ *  - dy>0 moves everything down; dy<0 moves up
+ * Newly revealed cells become false.
+ */
+function shiftMask(mask, dx, dy) {
+  const H = mask.length;
+  const W = mask[0].length;
+  const out = Array.from({length: H}, () => Array(W).fill(false));
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const srcY = y + dy;
+      const srcX = x + dx;
+      if (srcY >= 0 && srcY < H && srcX >= 0 && srcX < W) {
+        out[y][x] = mask[srcY][srcX];
+      }
+    }
+  }
+  return out;
+}
+
 function moveEntity(uid, dx, dy) {
   const e = entities[uid];
   if (!e) return false;
@@ -69,8 +92,8 @@ function moveEntity(uid, dx, dy) {
   e.cy = targetCY;
   e.x  = nx;
   e.y  = ny;
+  e.lightMask = shiftMask(e.lightMask, dx, dy);
 
-  console.log(e.cx, e.cy)
   assembleVisibleMaps();
   return true;
 }
@@ -244,7 +267,7 @@ io.on('connection', socket => {
   const mapWidth = map[0]?.length || 0;
   for (let y=0; y < mapHeight; y++){
       for (let x=0; x < mapWidth; x++){   
-        if(map[y][x].name === "Floor") {
+        if(map[y][x].br.includes('g')) {
           available = {x, y}
         }
       }
@@ -277,7 +300,7 @@ io.on('connection', socket => {
 });
 io.on('connection', socket => {
   socket.on('move', data => {
-    if(moveEntity(data.currentplayer, data.dx, data.dy, 32, 32)) {
+    if(moveEntity(data.currentplayer, data.dx, data.dy, chunkHeight, chunkWidth)) {
       assembleVisibleMaps()
       let buf = buffers.get(socket.id);
           if (!buf) {
@@ -289,10 +312,10 @@ io.on('connection', socket => {
    // TickManager(map)
     }
   });
-
+  
     socket.on('turn', data => {
     if(entities[data.currentplayer].dir !== data.dir) {
-      turnEntity(data.currentplayer, data.dir)
+     turnEntity(data.currentplayer, data.dir)
       assembleVisibleMaps()
       let buf = buffers.get(socket.id);
           if (!buf) {
@@ -320,6 +343,7 @@ function TickManager(currentMap) {
    if(mapData.playermovements >= playeramount) {
     mapData.playermovements = 0
     Tick(mapData.map)
+    
    }
 }
 function turnEntity(uid, dir){
@@ -357,17 +381,12 @@ sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFo
   }
 */
   revealFOV(uid)
-  entities[uid].fovMask.forEach(y => {y.forEach(x => {
-    if(x) {
-      console.log(x)
-    }
-  })})
+  assembleVisibleMaps()
   if(protocol === 'noAction') {
     sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
 sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[uid].lightMask, trueMapping: trueMappingWithSeenMapping(entities[uid].seen, maps, entities[uid].map),seen: entities[uid].seen[entities[uid].map], fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight} )
   } else
     if(protocol ==='lightweight') {
-      console.log(entitiesInFovDetailed(entities[uid]))
     sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
   }
 }
@@ -458,7 +477,7 @@ function generateMap(height, width) {
     map.push(row);
   }
 }
-function generateProceduralMap(id, height, width, chunk) {
+function generateProceduralMap(id, height, width, chunk, state) {
   let data = []
   for (let y = 0; y < height; y++) {
     const row = [];
@@ -466,7 +485,7 @@ function generateProceduralMap(id, height, width, chunk) {
       row.push({
         base: '.',
         top: [], bl: [], br: [],
-        color: (x === 0 || y === 0 || x === width - 1 || y === height - 1) ? '#444' : '#111',
+        color:  '#111',
         name: 'Floor',
         meta: {}
       });
@@ -484,6 +503,7 @@ function generateProceduralMap(id, height, width, chunk) {
   }
   let chunks = maps[id].map.chunks
   chunks.push({x: chunk.x, y: chunk.y, data})
+generateMapContentsCircularForChunk(id, chunk.x, chunk.y, ChunkgenPicker(id), state)
 }
 // half-angle of cone in radians (45° here)
 const HALF_CONE_RAD = Math.PI / 4;
@@ -563,59 +583,66 @@ function revealFOV(playerUid) {
   const H = chunkHeight, W = chunkWidth;
   const R = p.FOV_RADIUS;
 
-  // clear masks
+  // 1) Clear out last‐frame masks:
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       p.fovMask[y][x]   = false;
-      p.lightMask[y][x] = false;
     }
   }
 
-  const centerY = Math.floor(H/2);
-  const centerX = Math.floor(W/2);
+  // 2) Compute your “center” tile in the 32×32 window:
+  const centerY = Math.floor(H / 2);
+  const centerX = Math.floor(W / 2);
 
-  // see your own tile (no flip here)
+  // 3) You always see the center tile:
   p.fovMask[centerY][centerX] = true;
+  //    and mark it seen in the global cache:
   markGlobalSeen(playerUid, 0, 0);
 
-  // cast rays…
+  // 4) Cast rays in a circle of radius R:
   for (let dy = -R; dy <= R; dy++) {
     for (let dx = -R; dx <= R; dx++) {
+      // skip outside the circle
       if (dx*dx + dy*dy > R*R) continue;
+      // skip outside your cone
       if (!inCone(dx, dy, p.dir)) continue;
 
-      // original target in window‐space
-      const tx = centerX - dx;
-      const ty = centerY - dy;
+      // target in window‐space = center + (dx,dy)
+      const tx = centerX + dx;
+      const ty = centerY + dy;
       if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
 
+      // walk the Bresenham line
       const line = bresenhamLine(centerX, centerY, tx, ty);
       let blocked = false;
-      for (let i = 0; i < line.length; i++) {
-        const [lx, ly] = line[i];
+      for (const [lx, ly] of line) {
+        // 5) Mark as “seen” in the global cache:
+        //    offset from center = (lx-centerX, ly-centerY)
+        markGlobalSeen(playerUid, lx - centerX, ly - centerY);
 
-        markGlobalSeen(playerUid, centerX - lx, centerY - ly);
+        // 6) Add to FOV if not yet blocked
+        if (!blocked) {
+          p.fovMask[ly][lx] = true;
+        }
 
-        // **FLIP HERE** before writing into fovMask:
-        const flipX = W - 1 - lx;    // horizontal flip
-        const flipY = H - 1 - ly;    // vertical   flip
-        p.fovMask[flipY][flipX] = !blocked;
-
+        // 7) Test blockage on the actual tile
         const cell = calculateRelativeChunk(
           p.map, p.cy, p.cx, p.y, p.x
         )[ly][lx];
-
         if (
           blockBases.includes(cell.base) ||
           cell.top.some(s => blockStatuses.includes(s)) ||
-          cell.br.some(t => blockTypes   .includes(t))
+          cell.br .some(t => blockTypes.includes(t))
         ) {
           blocked = true;
+          break;
         }
       }
     }
   }
 }
+
+
 
 
 
@@ -636,13 +663,13 @@ function markGlobalSeen(uid, relX, relY) {
   seenChunk.data[ly][lx] = true;
 }
 
-function getChunkByMapId(mapId, cx, cy) {
+function getChunkByMapId(mapId, cx, cy, state) {
   const mapObj = maps[mapId];
   if (!mapObj) throw new Error(`map "${mapId}" not found`);
   let chunk = mapObj.map.chunks.find(c => c.x === cx && c.y === cy);
   if (!chunk) {
     // generateProceduralMap will push a new chunk into maps[mapId].map.chunks
-    generateProceduralMap(mapId, chunkHeight, chunkWidth, { x: cx, y: cy });
+    generateProceduralMap(mapId, chunkHeight, chunkWidth, { x: cx, y: cy }, state);
     chunk = mapObj.map.chunks.find(c => c.x === cx && c.y === cy);
     if (!chunk) throw new Error(`failed to generate chunk ${cx},${cy}`);
   }
@@ -703,60 +730,89 @@ function clearFovMask(playerUid){
 
 
 function Tick(mapId) {
-  getUIDsByType('player').forEach(p => {
-    let pe = entities[p]
-    let currentMap = calculateRelativeChunk(mapId, pe.cy, pe.cx, pe.y, pe.x)
-          const height = chunkHeight
-  const width = chunkWidth
-    for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-     entities[p].lightMask[y][x] = false
-    }
-  }
-  Object.entries(entities).forEach(([id, e]) => {
-  // e.x, e.y, e.char, e.meta, etc.
-if (e.type === "torch" && !(getEntityData(id, "burnedOut")) && entities[p].seen[e.y]?.[e.x]) {
-  // have we ever seen this tile?
-  const seenHere = !!entities[p].seen[e.y]?.[e.x];
+  const H = chunkHeight, W = chunkWidth;
 
-  // fetch last‐frame value (default to false)
-  const wasDim = getEntityData(id, "isDim") || false;
+  // for each player…
+  getUIDsByType('player').forEach(uid => {
+    const p = entities[uid];
 
-  // if it’s been seen, flip it; otherwise force off
-  const isDimNow = seenHere ? !wasDim : false;
-  setEntityData(id, "isDim", isDimNow);
+    // 1) build the 32×32 tile window around the player
+    const viewMap = calculateRelativeChunk(
+      mapId, p.cy, p.cx, p.y, p.x
+    );
 
-  // only light when “on”
-
-    entities[p].lightMask[e.y][e.x] = true;
-    for (let {dx, dy} of deltas4) {
-      const nx = e.x + dx, ny = e.y + dy;
-      if (nx < 0||nx>=width||ny<0||ny>=height) continue;
-      entities[p].lightMask[ny][nx] = true;
-      entities[p].seen[ny][nx] = true;
-      entities[p].visibleMap[ny][nx] = currentMap[ny][nx];
-      if (isDimNow) {
-      for (let {dx: ddx, dy: ddy} of deltas4) {
-        const nnx = nx + ddx, nny = ny + ddy;
-        if (nnx < 0||nnx>=width||nny<0||nny>=height) continue;
-        entities[p].lightMask[nny][nnx] = true;
-        entities[p].seen[nny][nnx] = true;
-        entities[p].visibleMap[nny][nnx] = currentMap[nny][nnx];
+    // 2) clear out last‐frame light
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        p.lightMask[y][x] = false;
       }
     }
-  }
+
+    // 3) for every entity that’s a torch…
+    for (const [eid, e] of Object.entries(entities)) {
+      if (e.type !== 'torch' || getEntityData(eid, 'burnedOut')) continue;
+
+      // 4) check if that torch’s tile has ever been seen (global cache)
+      const seenChunk = getSeenArrayOfChunk(uid, mapId, e.cx, e.cy);
+      if (!seenChunk.data[e.y][e.x]) continue;
+
+      // 5) toggle dim state
+      const wasDim  = getEntityData(eid, 'isDim') || false;
+      const isDimNow= !wasDim;
+      setEntityData(eid, 'isDim', isDimNow);
+
+      // 6) compute this torch’s offset from the player *in world coords*
+      const worldDX = (e.cx*W + e.x) - (p.cx*W + p.x);
+      const worldDY = (e.cy*H + e.y) - (p.cy*H + p.y);
+
+      // 7) convert that to 32×32 window coords
+      const cx = Math.floor(W/2), cy = Math.floor(H/2);
+      const tx = cx + worldDX, ty = cy + worldDY;
+      if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
+
+      // 8) light the torch tile
+      p.lightMask[ty][tx] = true;
+      markGlobalSeen(uid, worldDX, worldDY);
+      p.visibleMap[ty][tx] = viewMap[ty][tx];
+
+      // 9) light its 4 neighbors (and mark them seen)
+      for (let {dx,dy} of deltas4) {
+        const nx = tx + dx, ny = ty + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        p.lightMask[ny][nx] = true;
+        markGlobalSeen(uid, worldDX + dx, worldDY + dy);
+        p.visibleMap[ny][nx] = viewMap[ny][nx];
+
+        // 10) if it’s dim, light one more ring out
+        if (isDimNow) {
+          for (let {dx:ddx,dy:ddy} of deltas4) {
+            const nnx = nx + ddx, nny = ny + ddy;
+            if (nnx < 0 || nnx >= W || nny < 0 || nny >= H) continue;
+            p.lightMask[nny][nnx] = true;
+            markGlobalSeen(uid, worldDX + dx + ddx, worldDY + dy + ddy);
+            p.visibleMap[nny][nnx] = viewMap[nny][nnx];
+          }
+        }
+      }
+    }
+    
+    // 11) finally, push your updated masks & visibleMap back to the player
+        ChunkTickPicker(mapId, uid)
+    const sock = getEntityData(uid, 'socketId');
+    sendOnlyTo(sock, 'mapData', {
+      map: {
+        lightMask: p.lightMask,
+        seen:      p.seen,
+        fovMask:   p.fovMask,
+        map:       p.visibleMap
+      },
+      width:  W,
+      height: H
+    });
+  });
 }
 
-  
-});
 
-
-  if (p) {
-    assembleVisibleMaps()
-   updateMapNEntityData(p, 'lightweight')
-  }
-});
-}
 function getChunkOfPlayer(uid) {
 entities[uid]
 }
@@ -837,24 +893,32 @@ function trueMappingWithSeenMapping(seenMapping, fullMaps, mapId) {
   return trueMapping;
 }
 
-function generateMapContentsCircular(currentMap, cb) {
-      const height = currentMap.length;
-  const width = currentMap[0]?.length || 0;
+function generateMapContentsCircularForChunk(mapId, cx, cy, cb, state) {
+  // 1) grab (or generate) that chunk
+  const chunk = getChunkByMapId(mapId, cx, cy);
+  if (!chunk || !chunk.data) {
+    throw new Error(`Chunk ${cx},${cy} not found in map "${mapId}"`);
+  }
 
-  const cx = Math.floor(width / 2);
-  const cy = Math.floor(height / 2);
-  const maxR = Math.ceil(Math.sqrt(cx*cx + cy*cy));
-  let visited = Array.from({length: height}, () => Array(width).fill(false));
+  // 2) call your existing circular generator over chunk.data
+  const currentMap = chunk.data;
+  const height = currentMap.length;
+  const width  = currentMap[0]?.length || 0;
+
+  const centerX = Math.floor(width  / 2);
+  const centerY = Math.floor(height / 2);
+  const maxR    = Math.ceil(Math.sqrt(centerX*centerX + centerY*centerY));
+  const visited = Array.from({ length: height }, () => Array(width).fill(false));
 
   for (let r = 0; r <= maxR; r++) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        if (!visited[y][x]) {
-          const dist = Math.round(Math.sqrt((x - cx) ** 2 + (y - cy) ** 2));
-          if (dist === r) {
-            cb(currentMap, x, y, currentMap[y][x]);
-            visited[y][x] = true;
-          }
+        if (visited[y][x]) continue;
+        const dist = Math.round(Math.hypot(x - centerX, y - centerY));
+        if (dist === r) {
+          // invoke your populator
+          cb(currentMap, x, y, currentMap[y][x], cx, cy, mapId, state);
+          visited[y][x] = true;
         }
       }
     }
@@ -988,12 +1052,109 @@ function TorchPlacer(currentMap, x, y, cell) {
   }
   }
 }
+function placeStructureInChunk(mapId, startCX, startCY, startLX, startLY, structTiles) {
+  const Hs = structTiles.length;
+  if (Hs === 0) return;
+  const Ws = structTiles[0].length;
+
+  // Compute the world‐coordinates of your origin:
+  const originWorldX = startCX * chunkWidth  + startLX;
+  const originWorldY = startCY * chunkHeight + startLY;
+  // Now just reuse our world‐based placer:
+  placeStructure(mapId, originWorldX, originWorldY, structTiles);
+}
+function placeStructure(mapId, originWorldX, originWorldY, structTiles) {
+  const Hs = structTiles.length;
+  if (Hs === 0) return;
+  const Ws = structTiles[0].length;
+
+  for (let sy = 0; sy < Hs; sy++) {
+    for (let sx = 0; sx < Ws; sx++) {
+      const tile = structTiles[sy][sx];
+      // Compute global tile coords
+      const gx = originWorldX + sx;
+      const gy = originWorldY + sy;
+
+      // Which chunk is that in?
+      const cX = Math.floor(gx / chunkWidth);
+      const cY = Math.floor(gy / chunkHeight);
+
+      // Wrap into local chunk coords
+      const lX = ((gx % chunkWidth) + chunkWidth) % chunkWidth;
+      const lY = ((gy % chunkHeight) + chunkHeight) % chunkHeight;
+
+      // Ensure the chunk exists (will generate if needed)
+      const chunk = getChunkByMapId(mapId, cX, cY, false);
+
+      // Finally write the tile in
+      chunk.data[lY][lX] = {
+        base:  tile.base,
+        top:   Array.isArray(tile.top)   ? tile.top.slice()   : [],
+        bl:    Array.isArray(tile.bl)    ? tile.bl.slice()    : [],
+        br:    Array.isArray(tile.br)    ? tile.br.slice()    : [],
+        color: tile.color,
+        name:  tile.name,
+        meta:  { ...(tile.meta || {}) }
+      };
+    }
+  }
+}
+function getMapIdbyMap(map) {
+   Object.entries(maps).forEach(([id, cmap]) => {
+if(cmap === map) {
+  return id
+}
+   })
+}
+const woodblock = {base:'#*', name:'Wood Wall', color: '#412', br: ['W']}
+const hut = [
+  [woodblock,woodblock,woodblock]
+]
+function overworldPlainsGen(currentMap, x, y, cell, cx, cy, mapId, state = true) {
+      if (cell.base === ".") {
+        cell.base = ".";
+        cell.name = "Grass";
+        cell.br = ['g'];
+        cell.color = "#151"
+      }
+      if(Math.random() < 0.01 && state) {
+        placeStructureInChunk(mapId, cx, cy, x, y, hut)
+        console.log(cx, cy, x, y)
+      }
+}
+function ChunkgenPicker(mapID) {
+if(mapID === 'overworld') {
+  return overworldPlainsGen
+}
+}
+function increaseTime(mapId = 'overworld')  {
+  Object.values(entities).forEach(e => { 
+    if(e.map === mapId) {
+      maps[mapId].time += 1;
+    }
+  })
+}
+function ChunkTickPicker(mapID, uid) {
+// initialize to 0 if it doesn’t exist (or is null/undefined)
+if (maps[mapID].time == null && mapID === 'overworld') {
+  maps[mapID].time = 0;
+  setInterval(increaseTime, 3600);
+}
+
+if(mapID === 'overworld' && maps[mapID].time <= 1000) {
+  entities[uid].FOV_RADIUS = 12
+  entities[uid].lightMask = Array.from({length: chunkHeight},()=>Array(chunkWidth).fill(true))
+}
+assembleVisibleMaps(mapID)
+updateMapNEntityData(uid, 'lightweight')
+}
 (async ()=>{
 generateProceduralMap('overworld', 32, 32, {x: 0, y: 0})
 map = maps['overworld'].map.chunks[0].data
 
   //generateMapContentsCircular(map, roomCarverPopulator);
   //generateMapContentsCircular(map, TorchPlacer);
+  generateMapContentsCircularForChunk('overworld', 0, 0, ChunkgenPicker('overworld'))
     })();
 
 server.listen(8000, '0.0.0.0', () => {

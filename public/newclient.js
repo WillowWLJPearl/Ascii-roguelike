@@ -31,7 +31,7 @@ atlas.onerror = () => {
 };
 const spriteRules = [
   // if cell.base is '#', return your wallImg (an Image)
-  (cell,x,y) => cell.base === '#*' ? [1,7] : null,
+  (cell,x,y) => cell.name === 'Stone Wall' ? [1,7] : null,
   // ...other rules...
 ];
 const wallImg = new Image();
@@ -49,47 +49,51 @@ const cam = {
 };
 
     let map, seen, fovMask, lightMask, entities;
-    let TILE = 64;
+    let TILE = 16;
 
 
 function resetCamera() {
-  const cols = map[0].length,
-        rows = map.length;
+  const rows = map.length;
+  const cols = map[0]?.length || 0;
 
   if (cam.full) {
-    // full‐map mode: show everything
+    // Full-map mode: show everything
     cam.w = cols;
     cam.h = rows;
     cam.x = 0;
     cam.y = 0;
 
   } else {
-    // fixed viewport size
+    // Normal mode: viewport is at most VIEW_W×VIEW_H, or smaller if the map itself is smaller
     cam.w = Math.min(VIEW_W, cols);
     cam.h = Math.min(VIEW_H, rows);
 
-    if (entities && currentplayer) {
-      const p = entities[currentplayer];
+if (entities && currentplayer) {
+  const p = entities[currentplayer];
 
-      // center player in the middle of the view
-      cam.x = p.x - Math.floor(cam.w / 2);
-      cam.y = p.y - Math.floor(cam.h / 2);
-    }
+  let targetX = p.x - Math.ceil(cam.w / 2);
+ let targetY = p.y - Math.ceil(cam.h / 2);
+
+  // …THEN CLAMP SO WE STAY IN‐BOUNDS…
+  cam.x = Math.max(0, Math.min(targetX, cols - cam.w));
+  cam.y = Math.max(0, Math.min(targetY, rows - cam.h));
+}
   }
 
-  // compute TILE so the view fits the container
-  const BW = container.clientWidth,
-        BH = container.clientHeight;
+  // Now figure out TILE so cam.w × cam.h fits the container
+  const BW = container.clientWidth;
+  const BH = container.clientHeight;
   TILE = Math.floor(Math.min(BW / cam.w, BH / cam.h));
 
-  // set the actual canvas buffers to match
-  const bufW = cam.w * TILE,
-        bufH = cam.h * TILE;
+  // Finally, set the *buffer* size (canvas.width/height) to match
+  const bufW = cam.w * TILE;
+  const bufH = cam.h * TILE;
   [mapCanvas, entityCanvas, fogCanvas].forEach(c => {
     c.width  = bufW;
     c.height = bufH;
   });
 }
+
 
 
 function applyCam(ctx) {
@@ -171,38 +175,18 @@ function drawBaseMap() {
 }
 
 function drawEntities(playerId = currentplayer) {
-  const P = entities[playerId];
-
-  entityCtx.resetTransform();
+   entityCtx.resetTransform();
   entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
   applyCam(entityCtx);
 
-  entityCtx.textAlign = 'center';
+  entityCtx.textAlign    = 'center';
   entityCtx.textBaseline = 'middle';
 
   for (const id in entities) {
-    if (id === playerId) continue;
     const e  = entities[id];
     const tx = e.x, ty = e.y;
 
-    // 1) skip if outside viewport
-    if (tx < cam.x || tx >= cam.x + cam.w ||
-        ty < cam.y || ty >= cam.y + cam.h) continue;
-
-    // 2) compute relative mask coords
-    const rx = tx - cam.x;  // 0..chunkWidth-1
-    const ry = ty - cam.y;  // 0..chunkHeight-1
-
-    // 3) flip them
-    const flipX = chunkWidth  - 1 - rx;
-    const flipY = chunkHeight - 1 - ry;
-
-    // 4) skip if fogged out under flipped mask
-    if (!debugNoFog && !(fovMask[flipY]?.[flipX] || lightMask[flipY]?.[flipX])) {
-      continue;
-    }
-
-    // 5) draw sprite or char
+    // DRAW SPRITE OR CHARACTER at (tx,ty)
     if (atlasReady) {
       let sprite;
       for (const rule of spriteRules) {
@@ -220,18 +204,13 @@ function drawEntities(playerId = currentplayer) {
       }
     }
 
-    // fallback
+    // fallback ASCII
     entityCtx.font      = `0.8px monospace`;
     entityCtx.fillStyle = e.color;
     entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
   }
-
-  // draw the player last, unflipped
-  const px = P.x, py = P.y;
-  entityCtx.font      = `0.8px monospace`;
-  entityCtx.fillStyle = P.color;
-  entityCtx.fillText(P.char, px + 0.5, py + 0.5);
 }
+
 
 
 
@@ -239,7 +218,6 @@ const chunkHeight = 32
 const chunkWidth = 32
 function drawFog() {
   if (debugNoFog) return;
-
   fogCtx.resetTransform();
   fogCtx.clearRect(0, 0, fogCanvas.width, fogCanvas.height);
   applyCam(fogCtx);
@@ -309,6 +287,8 @@ document.addEventListener('keydown', e => {
     cam.full = !cam.full;
     resetCamera();
     drawBaseMap();
+  } else if (e.code === 'Space'){
+    socket.emit('wait', { currentplayer });
   }
 });
     document.addEventListener('keydown', e => {
@@ -394,9 +374,9 @@ map = entities[currentplayer].visibleMap
 if(entities[currentplayer]?.lightMask) {
 lightMask = entities[currentplayer].lightMask
 }
-    resetCamera();
-      drawBaseMap();
-      renderLoop()
+   resetCamera()
+   drawBaseMap();
+   renderLoop();
 
       const container = document.getElementById('game-container');
 const cols = 17, rows = 13;           // our fixed viewport
@@ -478,7 +458,7 @@ mapCanvas.addEventListener('mousemove', e => {
   if (tileX < 0 || tileY < 0 ||
       tileY >= map.length ||
       tileX >= map[0].length ||
-      (!debugNoFog && !fovMask[tileY][tileX])) {
+      (!debugNoFog && !(fovMask[tileY][tileX] || lightMask[tileY][tileX]))) {
     hoverName.style.display = 'none';
     return;
   }
