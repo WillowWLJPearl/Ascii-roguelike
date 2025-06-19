@@ -6,7 +6,7 @@
     const mapCtx       = mapCanvas.getContext('2d');
     const entityCtx    = entityCanvas.getContext('2d');
     const fogCtx       = fogCanvas.getContext('2d');
-    let debugNoFog = true
+    let debugNoFog = false
     const VIEW_W = 17;
 const VIEW_H = 13;
 let currentplayer
@@ -57,27 +57,34 @@ function resetCamera() {
         rows = map.length;
 
   if (cam.full) {
+    // full‐map mode: show everything
     cam.w = cols;
     cam.h = rows;
     cam.x = 0;
     cam.y = 0;
+
   } else {
+    // fixed viewport size
     cam.w = Math.min(VIEW_W, cols);
     cam.h = Math.min(VIEW_H, rows);
-    if(entities) {
-    const p = entities[currentplayer];
-    cam.x = Math.max(0, Math.min(cols - cam.w, p.x - Math.floor(cam.w / 2)));
-    cam.y = Math.max(0, Math.min(rows - cam.h, p.y - Math.floor(cam.h / 2)));
+
+    if (entities && currentplayer) {
+      const p = entities[currentplayer];
+
+      // center player in the middle of the view
+      cam.x = p.x - Math.floor(cam.w / 2);
+      cam.y = p.y - Math.floor(cam.h / 2);
     }
   }
 
-  // The "tile" size is the *largest* tile that fits cam.w × cam.h in the box:
+  // compute TILE so the view fits the container
   const BW = container.clientWidth,
         BH = container.clientHeight;
   TILE = Math.floor(Math.min(BW / cam.w, BH / cam.h));
 
-  // Now, set canvas *buffer* (not style) sizes:
-  const bufW = cam.w * TILE, bufH = cam.h * TILE;
+  // set the actual canvas buffers to match
+  const bufW = cam.w * TILE,
+        bufH = cam.h * TILE;
   [mapCanvas, entityCanvas, fogCanvas].forEach(c => {
     c.width  = bufW;
     c.height = bufH;
@@ -117,8 +124,14 @@ function drawBaseMap() {
   mapCtx.textAlign    = 'center';
   mapCtx.textBaseline = 'middle';
 
+  const rows = map.length;
+  const cols = map[0]?.length || 0;
+
   for (let y = cam.y; y < cam.y + cam.h; y++) {
     for (let x = cam.x; x < cam.x + cam.w; x++) {
+      // SKIP out-of-bounds
+      if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+
       const cell = map[y][x];
 
       // draw floor color
@@ -135,146 +148,155 @@ function drawBaseMap() {
       }
 
       if (sprite instanceof HTMLImageElement) {
-        // single‐image sprite (your wallImg)
+        // single‐image sprite
         mapCtx.drawImage(sprite,
-          x, y, 1, 1         // dest in *tiles*
+          x, y, 1, 1
         );
       } else if (Array.isArray(sprite)) {
         // atlas‐based sprite [sx,sy]
         const [sx,sy] = sprite;
-  mapCtx.drawImage(
-    atlas,           // your single Image()
-    sx * 16,       // source-x in pixels
-    sy * 16,       // source-y in pixels
-    16, 16,      // source width/height
-    x, y,            // destination in *tiles* (applyCam scale)
-    1, 1             // dest size in *tiles*
-  );
+        mapCtx.drawImage(
+          atlas,
+          sx * 16, sy * 16, 16, 16,
+          x, y, 1, 1
+        );
       } else {
         // fallback ASCII
         mapCtx.font = `0.8px monospace`;
         mapCtx.fillStyle = '#FFF';
-        mapCtx.fillText(cell.base, x+0.5, y+0.5);
+        mapCtx.fillText(cell.base, x + 0.5, y + 0.5);
       }
     }
   }
 }
 
-
-
 function drawEntities(playerId = currentplayer) {
-  // grab the player so we know the center
   const P = entities[playerId];
-  const pWX = P.cx*chunkWidth + P.x;
-  const pWY = P.cy*chunkHeight + P.y;
-
-  const halfW = Math.floor(chunkWidth  / 2);
-  const halfH = Math.floor(chunkHeight / 2);
 
   entityCtx.resetTransform();
-  entityCtx.clearRect(0,0,entityCanvas.width,entityCanvas.height);
+  entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
   applyCam(entityCtx);
+
   entityCtx.textAlign = 'center';
   entityCtx.textBaseline = 'middle';
 
   for (const id in entities) {
-    if (id === playerId) continue;  // draw yourself last (or skip)
+    if (id === playerId) continue;
+    const e  = entities[id];
+    const tx = e.x, ty = e.y;
 
-    const e = entities[id];
-    // 1) world‐coords of entity
-    const wX = e.cx*chunkWidth  + e.x;
-    const wY = e.cy*chunkHeight + e.y;
+    // 1) skip if outside viewport
+    if (tx < cam.x || tx >= cam.x + cam.w ||
+        ty < cam.y || ty >= cam.y + cam.h) continue;
 
-    // 2) relative to player’s center in mask‐space
-    const rX = wX - pWX + halfW;
-    const rY = wY - pWY + halfH;
+    // 2) compute relative mask coords
+    const rx = tx - cam.x;  // 0..chunkWidth-1
+    const ry = ty - cam.y;  // 0..chunkHeight-1
 
-    // 3) skip if outside the 32×32 window
-    if (rX < 0 || rX >= chunkWidth || rY < 0 || rY >= chunkHeight) continue;
+    // 3) flip them
+    const flipX = chunkWidth  - 1 - rx;
+    const flipY = chunkHeight - 1 - ry;
 
-    // 4) skip if fogged out
-    if (!debugNoFog && !(fovMask[rY][rX] || lightMask[rY][rX])) continue;
+    // 4) skip if fogged out under flipped mask
+    if (!debugNoFog && !(fovMask[flipY]?.[flipX] || lightMask[flipY]?.[flipX])) {
+      continue;
+    }
 
-    // 5) now draw at world‐tile (applyCam already offsets it)
+    // 5) draw sprite or char
     if (atlasReady) {
       let sprite;
       for (const rule of spriteRules) {
-        const r = rule({ base: e.char, top: e.top }, e.x, e.y);
+        const r = rule({ base: e.char, top: e.top }, tx, ty);
         if (r) { sprite = r; break; }
       }
       if (sprite) {
-        const [sx,sy] = sprite;
+        const [sx, sy] = sprite;
         entityCtx.drawImage(
           atlas,
           sx * TILE, sy * TILE, TILE, TILE,
-          wX, wY, 1, 1
+          tx, ty, 1, 1
         );
         continue;
       }
     }
 
-    // fallback to text
-    entityCtx.font = `0.8px monospace`;
+    // fallback
+    entityCtx.font      = `0.8px monospace`;
     entityCtx.fillStyle = e.color;
-    entityCtx.fillText(e.char, wX + 0.5, wY + 0.5);
+    entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
   }
 
-  // finally draw the player on top
-  const centerX = P.x + P.cx*chunkWidth;
-  const centerY = P.y + P.cy*chunkHeight;
-  entityCtx.font = `0.8px monospace`;
+  // draw the player last, unflipped
+  const px = P.x, py = P.y;
+  entityCtx.font      = `0.8px monospace`;
   entityCtx.fillStyle = P.color;
-  entityCtx.fillText(P.char, centerX + 0.5, centerY + 0.5);
+  entityCtx.fillText(P.char, px + 0.5, py + 0.5);
 }
+
+
 
 const chunkHeight = 32
 const chunkWidth = 32
-
-
-
 function drawFog() {
-    if(debugNoFog) return
+  if (debugNoFog) return;
+
   fogCtx.resetTransform();
   fogCtx.clearRect(0, 0, fogCanvas.width, fogCanvas.height);
   applyCam(fogCtx);
 
-  // grab the array of seen‐chunks for this map
-  const seenChunks = seen?.map?.chunks || [];
+  // the 32×32 window is centered in visibleMap/fovMask/lightMask
+  const vH = chunkHeight, vW = chunkWidth;
+  const halfH = Math.floor(vH/2), halfW = Math.floor(vW/2);
 
-  for (let y = cam.y; y < cam.y + cam.h; y++) {
-    for (let x = cam.x; x < cam.x + cam.w; x++) {
+  // our on-screen viewport size
+  const VW = cam.w, VH = cam.h;
 
-      // 1) “Seen?” via chunk lookup
-      const cx = Math.floor(x / chunkWidth);
-      const cy = Math.floor(y / chunkHeight);
-      const chunk = seenChunks.find(c => c.x === cx && c.y === cy);
-      let hasSeen = false;
-      if (chunk) {
-        // wrap into chunk‐local coords
-        const lx = ((x % chunkWidth)  + chunkWidth)  % chunkWidth;
-        const ly = ((y % chunkHeight) + chunkHeight) % chunkHeight;
-        hasSeen = chunk.data[ly]?.[lx] || false;
-      }
+  // compute the top-left of the viewport *inside* the 32×32 map:
+  const offsetY = halfH - Math.floor(VH/2);
+  const offsetX = halfW - Math.floor(VW/2);
 
-      // 2) “In FOV?” and “lit?” via relative indices
-      const rx = x - cam.x;  // [0..chunkWidth)
-      const ry = y - cam.y;  // [0..chunkHeight)
-      const inFov = fovMask[ry]?.[rx];
-      if(lightMask) {
-      const lit   = lightMask[ry]?.[rx];
-      }
-      // 3) draw fog
-      if (!hasSeen) {
+  for (let sy = 0; sy < VH; sy++) {
+    for (let sx = 0; sx < VW; sx++) {
+      // map → visibleMap/FOV coordinates
+      const my = offsetY + sy-1;
+      const mx = offsetX + sx-1;
+
+      // guard in case part of your viewport extends beyond the 32×32
+      if (my < 0 || my >= vH || mx < 0 || mx >= vW) {
+        // If you want to treat that as "never seen", just draw full black:
         fogCtx.fillStyle = 'rgba(0,0,0,1)';
-        fogCtx.fillRect(x, y, 1, 1);
-      } else if (!(inFov || lit)) {
-        fogCtx.fillStyle = 'rgba(0,0,0,0.6)';
-        fogCtx.fillRect(x, y, 1, 1);
+        fogCtx.fillRect(cam.x+sx, cam.y+sy, 1,1);
+        continue;
       }
-      // else: visible → leave clear
+
+      // 1) have we seen it?
+      const tile = map[my][mx];
+      const hasSeen = tile && tile.name !== 'Darkness';
+
+      // 2) is it lit/refreshed now?
+      const inFov = fovMask[my]?.[mx];
+      const lit   = lightMask[my]?.[mx];
+
+      // 3) draw at world coords = (cam.x+sx, cam.y+sy)
+      const wx = cam.x + sx;
+      const wy = cam.y + sy;
+
+      if (!hasSeen) {
+        // never seen → solid black
+        fogCtx.fillStyle = 'rgba(0,0,0,1)';
+        fogCtx.fillRect(wx, wy, 1, 1);
+
+      } else if (!(inFov || lit)) {
+        // seen before but not right now → dim
+        fogCtx.fillStyle = 'rgba(0,0,0,0.6)';
+        fogCtx.fillRect(wx, wy, 1, 1);
+      }
+      // else: currently visible → leave clear
     }
   }
 }
+
+
 
 function renderLoop() {
   drawEntities();
@@ -320,7 +342,7 @@ document.addEventListener('keydown', e => {
    seen      = data.map.seen;
    fovMask   = data.map.fovMask;
    lightMask = data.map.lightMask;
-   console.log(data.map.map)
+
    resetCamera()
    drawBaseMap();
    renderLoop();

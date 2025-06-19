@@ -76,7 +76,47 @@ function moveEntity(uid, dx, dy) {
 }
 
 
+function entitiesInFovDetailed(viewer) {
+  const halfW = Math.floor(chunkWidth  / 2);
+  const halfH = Math.floor(chunkHeight / 2);
 
+  // viewer’s absolute world‐coords
+  const vwx = viewer.cx * chunkWidth  + viewer.x;
+  const vwy = viewer.cy * chunkHeight + viewer.y;
+
+  const visible = {};
+  for (const [uid, e] of Object.entries(entities)) {
+    if (uid === viewer.uid) continue;  // don’t send the viewer itself here
+
+    // 1) entity absolute world coords
+    const ewx = e.cx * chunkWidth  + e.x;
+    const ewy = e.cy * chunkHeight + e.y;
+
+    // 2) offset in world‐space
+    const dx = ewx - vwx;
+    const dy = ewy - vwy;
+
+    // 3) map into your 0…31 window
+    const rx = dx + halfW;
+    const ry = dy + halfH;
+
+    // 4) test bounds & mask **true** (only include if visible or lit)
+    const inBounds = rx >= 0 && rx < chunkWidth && ry >= 0 && ry < chunkHeight;
+    const inFov    = viewer.fovMask[ry]?.[rx];
+    const lit      = viewer.lightMask[ry]?.[rx];
+
+    if (inBounds && (inFov || lit)) {
+      // clone and overwrite x/y to the relative window coords
+      visible[uid] = {
+        ...e,
+        x: rx,
+        y: ry
+      };
+    }
+  }
+
+  return visible;
+}
 function entityIdsInFov(viewer) {
   const ids = [];
   const halfW = Math.floor(chunkWidth  / 2);
@@ -218,7 +258,7 @@ io.on('connection', socket => {
 
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
-  sendOnlyTo(socket.id, "entityData", {list: entitiesInFovOf(entities[newplayer]), changed: newplayer})
+  sendOnlyTo(socket.id, "entityData", {list: entitiesInFovDetailed(entities[newplayer]), changed: newplayer})
 
 
   // broadcast join to others
@@ -302,7 +342,7 @@ function updateMapNEntityData(uid, protocol = 'noAction', data, batch = false) {
       const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
 
-  let firstPerPlayerInstanceData = {entity: entities[uid], seenEntities: entitiesInFovOf(entities[uid])}
+  let firstPerPlayerInstanceData = {entity: entities[uid], seenEntities: entitiesInFovDetailed(entities[uid])}
 /*
   if(protocol === 'move') {
 
@@ -323,12 +363,12 @@ sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFo
     }
   })})
   if(protocol === 'noAction') {
-    sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovOf(entities[uid]), changed: uid})
+    sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
 sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[uid].lightMask, trueMapping: trueMappingWithSeenMapping(entities[uid].seen, maps, entities[uid].map),seen: entities[uid].seen[entities[uid].map], fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight} )
   } else
     if(protocol ==='lightweight') {
-      console.log(entitiesInFovOf(entities[uid]))
-    sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovOf(entities[uid]), changed: uid})
+      console.log(entitiesInFovDetailed(entities[uid]))
+    sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
   }
 }
 function getPlayerBySocket(socketId) {
@@ -531,11 +571,11 @@ function revealFOV(playerUid) {
     }
   }
 
-  const cy = Math.floor(H/2);
-  const cx = Math.floor(W/2);
+  const centerY = Math.floor(H/2);
+  const centerX = Math.floor(W/2);
 
-  // see your own tile
-  p.fovMask[cy][cx] = true;
+  // see your own tile (no flip here)
+  p.fovMask[centerY][centerX] = true;
   markGlobalSeen(playerUid, 0, 0);
 
   // cast rays…
@@ -544,21 +584,22 @@ function revealFOV(playerUid) {
       if (dx*dx + dy*dy > R*R) continue;
       if (!inCone(dx, dy, p.dir)) continue;
 
-const tx = cx - dx;
-const ty = cy - dy;
-
+      // original target in window‐space
+      const tx = centerX - dx;
+      const ty = centerY - dy;
       if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
 
-      const line = bresenhamLine(cx, cy, tx, ty);
+      const line = bresenhamLine(centerX, centerY, tx, ty);
       let blocked = false;
       for (let i = 0; i < line.length; i++) {
         const [lx, ly] = line[i];
 
-        // now pass the UID in
-markGlobalSeen(playerUid, cx - lx, cy - ly);
-        if (!blocked) {
-          p.fovMask[ly][lx] = true;
-        }
+        markGlobalSeen(playerUid, centerX - lx, centerY - ly);
+
+        // **FLIP HERE** before writing into fovMask:
+        const flipX = W - 1 - lx;    // horizontal flip
+        const flipY = H - 1 - ly;    // vertical   flip
+        p.fovMask[flipY][flipX] = !blocked;
 
         const cell = calculateRelativeChunk(
           p.map, p.cy, p.cx, p.y, p.x
@@ -567,15 +608,15 @@ markGlobalSeen(playerUid, cx - lx, cy - ly);
         if (
           blockBases.includes(cell.base) ||
           cell.top.some(s => blockStatuses.includes(s)) ||
-          cell.br.some(t => blockTypes.includes(t))
+          cell.br.some(t => blockTypes   .includes(t))
         ) {
           blocked = true;
-          break;
         }
       }
     }
   }
 }
+
 
 
 /**
@@ -712,7 +753,7 @@ if (e.type === "torch" && !(getEntityData(id, "burnedOut")) && entities[p].seen[
 
   if (p) {
     assembleVisibleMaps()
-   updateMapNEntityData(p)
+   updateMapNEntityData(p, 'lightweight')
   }
 });
 }
