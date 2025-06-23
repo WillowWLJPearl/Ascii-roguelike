@@ -1,3 +1,5 @@
+
+
   const socket = io();
     const container    = document.getElementById('game-container');
     const mapCanvas    = document.getElementById('mapCanvas');
@@ -32,10 +34,11 @@ atlas.onerror = () => {
 const spriteRules = [
   // if cell.base is '#', return your wallImg (an Image)
   (cell,x,y) => cell.name === 'Stone Wall' ? [1,7] : null,
+  //(cell,x,y) => cell.name === 'Grass' ? wallImg : null,
   // ...other rules...
 ];
 const wallImg = new Image();
-wallImg.src = '/sprites/wall.png';
+wallImg.src = '/sprites/grass.png';
 //wallImg.onload = () => atlasReady = true;
 
 atlas.onerror = () => {
@@ -175,7 +178,7 @@ function drawBaseMap() {
 }
 
 function drawEntities(playerId = currentplayer) {
-   entityCtx.resetTransform();
+  entityCtx.resetTransform();
   entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
   applyCam(entityCtx);
 
@@ -186,7 +189,7 @@ function drawEntities(playerId = currentplayer) {
     const e  = entities[id];
     const tx = e.x, ty = e.y;
 
-    // DRAW SPRITE OR CHARACTER at (tx,ty)
+    // 1) DRAW SPRITE OR CHARACTER at (tx,ty)
     if (atlasReady) {
       let sprite;
       for (const rule of spriteRules) {
@@ -200,16 +203,70 @@ function drawEntities(playerId = currentplayer) {
           sx * TILE, sy * TILE, TILE, TILE,
           tx, ty, 1, 1
         );
-        continue;
+      } else {
+        // fallback ASCII
+        entityCtx.font      = `0.8px monospace`;
+        entityCtx.fillStyle = e.color;
+        entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
       }
+    } else {
+      // fallback ASCII if atlas not ready
+      entityCtx.font      = `0.8px monospace`;
+      entityCtx.fillStyle = e.color;
+      entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
     }
 
-    // fallback ASCII
-    entityCtx.font      = `0.8px monospace`;
-    entityCtx.fillStyle = e.color;
-    entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
+    // 2) DRAW NAME ABOVE for other players
+    if (id !== playerId) {
+      const nameY = ty - 0.3;
+      entityCtx.font      = `0.45px monospace`;
+      entityCtx.fillStyle = e.color;
+      entityCtx.lineWidth   = 0.05;
+      entityCtx.strokeStyle = 'black';
+
+      entityCtx.strokeText(e.name || id, tx + 0.5, nameY);
+      entityCtx.fillText  (e.name || id, tx + 0.5, nameY);
+    }
+
+    // 3) DRAW HEALTH BAR above them (if they have .health)
+    if (e.health && typeof e.health.currentHealth === 'number') {
+      const { currentHealth: cur, maxHealth: max } = e.health;
+      const ratio = Math.max(0, Math.min(cur / max, 1));
+
+      // bar dimensions in tile‐units
+      const barW = 0.8, barH = 0.1;
+      const barX = tx + 0.1;
+      let barY = ty - 0.6;
+      if(e.type === 'player') {barY = barY-0.1}
+
+      // border
+      entityCtx.lineWidth   = 0.02;
+      entityCtx.strokeStyle = '#000';
+      entityCtx.strokeRect(barX, barY, barW, barH);
+
+      // background
+      entityCtx.fillStyle = '#444';
+      entityCtx.fillRect(barX, barY, barW, barH);
+
+      // filled health
+      colour = 'red'
+      if(id === playerId) {colour = 'green'}
+      entityCtx.fillStyle = colour
+      entityCtx.fillRect(barX, barY, barW * ratio, barH);
+
+      // text overlay
+      entityCtx.font         = `0.35px monospace`;
+      entityCtx.textAlign    = 'center';
+      entityCtx.textBaseline = 'bottom';
+      entityCtx.fillStyle    = '#fff';
+      entityCtx.fillText(`${cur}/${max}`,
+                         tx + 0.5,
+                         barY - 0.01);
+    }
   }
 }
+
+
 
 
 
@@ -277,10 +334,133 @@ function drawFog() {
 
 
 function renderLoop() {
+  onResizeOrReset()
   drawEntities();
   drawFog();
+drawOverlay()
   requestAnimationFrame(renderLoop);
 }
+// assuming mapCanvas is your <canvas> element
+mapCanvas.addEventListener('mousedown', e => {
+  // only handle left button
+  if (e.button !== 0) return;
+  if(hoverTile === null) return;
+  if(!readyToAttack.state) return;
+
+  // get mouse position relative to the canvas
+  const rect = mapCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  // convert to tile coordinates
+  const tx = Math.floor(mx / TILE) + cam.x;
+  const ty = Math.floor(my / TILE) + cam.y;
+
+  socket.emit('attack', { currentplayer, item: readyToAttack.item, tile: hoverTile });
+});
+
+let readyToAttack = {state: false, item: {}}
+document.addEventListener('keydown', e => {
+  if (e.key.toLowerCase()==='v') {
+    if(readyToAttack.state) {
+      readyToAttack.state = false
+        highlightPos = null;
+    } else {
+      readyToAttack.state = true
+    }
+  }
+});
+const highlightCanvas = document.getElementById('highlightCanvas');
+const hlCtx = highlightCanvas.getContext('2d');
+
+// 1) track just the tile coords (not px/py) and build hoverText too
+let hoverTile = null;
+let hoverText = '';
+
+mapCanvas.addEventListener('mousemove', e => {
+  if (!readyToAttack.state) {
+    hoverTile = null;
+    hoverText = '';
+    return;
+  }
+  const { tileX, tileY } = screenToTile(e);
+
+  // bounds check
+  if (
+    tileX < cam.x || tileX >= cam.x + cam.w ||
+    tileY < cam.y || tileY >= cam.y + cam.h
+  ) {
+    hoverTile = null;
+    hoverText = '';
+    return;
+  }
+
+  // your “attackable” condition (tweak as needed)
+  const px = entities[currentplayer].x;
+  const py = entities[currentplayer].y;
+  // example: only highlight if the target tile is adjacent
+  if (Math.abs(tileX - px) + Math.abs(tileY - py) === 1) {
+    hoverTile = { x: tileX, y: tileY };
+    // build whatever text you want here:
+    const cell = map[tileY][tileX];
+    let name
+    if(!readyToAttack?.item?.name) {
+      name = 'Fist'
+    } else {name = readyToAttack.item.name}
+    hoverText = `${name}`;
+  } else {
+    hoverTile = null;
+    hoverText = '';
+  }
+});
+
+mapCanvas.addEventListener('mouseleave', () => {
+  hoverTile = null;
+  hoverText = '';
+});
+
+// 2) single overlay‐draw function
+function drawOverlay() {
+  // clear entire highlight layer once
+  hlCtx.setTransform(1,0,0,1,0,0);
+  hlCtx.clearRect(0, 0, highlightCanvas.width, highlightCanvas.height);
+
+  if (!hoverTile) return;
+
+  // — draw red tile outline using tile coords & applyCam —
+  hlCtx.save();
+  applyCam(hlCtx);
+  hlCtx.strokeStyle = 'red';
+  hlCtx.lineWidth   = 0.05;          // in tile units
+  hlCtx.strokeRect(hoverTile.x, hoverTile.y, 1, 1);
+  hlCtx.restore();
+
+  // — draw text in pixel space just above the tile —
+  const dx = (hoverTile.x - cam.x) * TILE;
+  const dy = (hoverTile.y - cam.y) * TILE;
+  hlCtx.setTransform(1,0,0,1,0,0);
+  hlCtx.font         = `${TILE * 0.5}px sans-serif`;
+  hlCtx.textAlign    = 'center';
+  hlCtx.textBaseline = 'bottom';
+  // black shadow
+  hlCtx.fillStyle    = 'rgba(0,0,0,0.7)';
+  hlCtx.fillText(hoverText, dx + TILE/2 + 1, dy - 1 + 1);
+  // white text
+  hlCtx.fillStyle    = '#FFF';
+  hlCtx.fillText(hoverText, dx + TILE/2,     dy - 1);
+}
+
+
+
+function resizeOverlay() {
+  // 1) match the highlight buffer to the map buffer
+  highlightCanvas.width  = mapCanvas.width;
+  highlightCanvas.height = mapCanvas.height;
+  // 2) match the CSS size exactly
+  highlightCanvas.style.width  = mapCanvas.style.width;
+  highlightCanvas.style.height = mapCanvas.style.height;
+}
+
 
 document.addEventListener('keydown', e => {
   if (e.key.toLowerCase()==='m') {
@@ -537,3 +717,69 @@ function updateSideBody() {
   }
   sideBody.innerHTML = html;
 }
+
+// define a handler to use the input value however you like
+function handleTextInput(str) {
+  let data = {name: '', uuid: ''}
+  data.name = str
+  data.uuid = currentplayer
+socket.emit('changeName', data);
+}
+
+// wire up the button
+document.getElementById('textSubmit').addEventListener('click', () => {
+  const val = document.getElementById('textInput').value;
+  handleTextInput(val);
+});
+
+
+const hotbarCanvas = document.getElementById('hotbarCanvas');
+const hotbarCtx    = hotbarCanvas.getContext('2d');
+const hotbarContainer = document.getElementById('hotbar-container');
+
+
+const HOTBAR_SLOTS    = 5;
+// Call this whenever you resetCamera() or resize:
+function resizeHotbar() {
+  // container’s CSS size via getBoundingClientRect
+  const { width, height } = hotbarContainer.getBoundingClientRect();
+  hotbarCanvas.width  = Math.floor(width);
+  hotbarCanvas.height = Math.floor(height);
+}
+
+function drawHotbar() {
+  hotbarCtx.resetTransform();
+  hotbarCtx.clearRect(0, 0, hotbarCanvas.width, hotbarCanvas.height);
+
+  const W = hotbarCanvas.width;
+  const H = hotbarCanvas.height;
+  const slotH = H / HOTBAR_SLOTS;
+
+  hotbarCtx.textAlign    = 'center';
+  hotbarCtx.textBaseline = 'middle';
+  hotbarCtx.font         = `${Math.floor(slotH * 0.6)/2}px sans-serif`;
+  hotbarCtx.fillStyle    = '#FFF';
+  hotbarCtx.strokeStyle  = '#000';
+  hotbarCtx.lineWidth    = 2;
+
+  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+    const y = i * slotH;
+    hotbarCtx.strokeRect(0, y, W, slotH);
+    const cy = y + slotH/2;
+    hotbarCtx.strokeText(`Slot ${i+1}`, W/2, cy);
+    hotbarCtx.fillText  (`Slot ${i+1}`, W/2, cy);
+  }
+}
+
+
+// Integrate into your render loop / resize logic
+function onResizeOrReset() {
+  resetCamera();        // your existing camera code
+  resizeHotbar();
+  resizeOverlay()
+  drawBaseMap();
+  drawEntities();
+  drawFog();
+  drawHotbar();
+}
+

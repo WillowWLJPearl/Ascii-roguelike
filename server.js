@@ -6,7 +6,12 @@ const { Server } = require('socket.io');
 
 const app    = express();
 const server = http.createServer(app);
-const io     = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: "*",             // or your client’s exact URL(s)
+    methods: ["GET","POST"]
+  }
+});
 let _nextEntityUID = 1;
 let typeIndex = {}; 
 // 1) serve everything in /public as static files
@@ -28,6 +33,7 @@ const blockTypes    = ['W'];
  *  - dy>0 moves everything down; dy<0 moves up
  * Newly revealed cells become false.
  */
+
 function shiftMask(mask, dx, dy) {
   const H = mask.length;
   const W = mask[0].length;
@@ -128,7 +134,7 @@ function entitiesInFovDetailed(viewer) {
     const inFov    = viewer.fovMask[ry]?.[rx];
     const lit      = viewer.lightMask[ry]?.[rx];
 
-    if (inBounds && (inFov || lit)) {
+    if (inBounds && (inFov || lit) && viewer.map === e.map) {
       // clone and overwrite x/y to the relative window coords
       visible[uid] = {
         ...e,
@@ -218,13 +224,14 @@ function getMapCell(currentMap, x, y) {
     return generatedEdges[key];
   }
 }
-function assembleVisibleMaps(mapId = 'overworld') {
+function assembleVisibleMaps() {
   const mapH = chunkHeight, mapW = chunkWidth;
   const halfH = Math.floor(chunkHeight/2);
   const halfW = Math.floor(chunkWidth /2);
 
   Object.values(entities).forEach(e => {
     // 1) build the full 32×32 window of real tiles around the player
+    mapId = e.map
     const rel = calculateRelativeChunk(mapId, e.cy, e.cx, e.y, e.x);
 
     // 2) clear visibleMap to darkness
@@ -262,6 +269,7 @@ const buffers = new Map();
 io.on('connection', socket => {
   console.log('➕ client connected:', socket.id);
 
+
   let available
         const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
@@ -282,17 +290,21 @@ io.on('connection', socket => {
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
   sendOnlyTo(socket.id, "entityData", {list: entitiesInFovDetailed(entities[newplayer]), changed: newplayer})
-
+  
 
   // broadcast join to others
  // socket.broadcast.emit('playerJoined', { id: socket.id, x, y, dir: 'down' });
 
+  socket.on('changeName', data => {
+  entities[data.uuid].name = data.name
+  })
  socket.on('wait', data => {
   TickManager('overworld')
   })
   socket.on('disconnect', () => {
     console.log('➖ client left:', socket.id);
-    socket.broadcast.emit('playerLeft', socket.id);
+    delete entities[getPlayerUuidBySocket(socket.id)]
+    
   });
     socket.on('alldata', () => {
     sendOnlyTo(socket.id,'alldata', {entities, map})
@@ -314,6 +326,7 @@ io.on('connection', socket => {
   });
   
     socket.on('turn', data => {
+      if(!entities[data.currentplayer]) return
     if(entities[data.currentplayer].dir !== data.dir) {
      turnEntity(data.currentplayer, data.dir)
       assembleVisibleMaps()
@@ -334,7 +347,90 @@ io.on('connection', socket => {
       buffers.delete(socket.id);
     }
   });
+   socket.on('attack', data => {
+  attackHandler(data.currentplayer, data.tile, data.item)
+  })
 })
+function getWorldPosition(e, relX, relY) {
+  const halfW = Math.floor(chunkWidth  / 2);
+  const halfH = Math.floor(chunkHeight / 2);
+
+  // 1) compute offset from the entity’s tile
+  const dX = relX - halfW;
+  const dY = relY - halfH;
+
+  // 2) absolute world‐tile coords
+  const worldX = e.cx * chunkWidth  + e.x + dX;
+  const worldY = e.cy * chunkHeight + e.y + dY;
+
+  // 3) figure out which chunk that lives in
+  const cx = Math.floor(worldX / chunkWidth);
+  const cy = Math.floor(worldY / chunkHeight);
+
+  // 4) wrap into local coords [0..chunkWidth)
+  const x = ((worldX % chunkWidth)  + chunkWidth)  % chunkWidth;
+  const y = ((worldY % chunkHeight) + chunkHeight) % chunkHeight;
+
+  return {
+    map:    e.map,
+    worldX, worldY,
+    cx,     cy,
+    x,      y
+  };
+}
+function hasItem(entity, item) {
+
+}
+function attackHandler(attacker, target, item) {
+  if(item?.slot) {
+    
+  } else {
+    item = {name: 'Fist', types: ['melee','physical'],range: 1,attackSize:1, damage: 1, effects: [{id:'self_harm', chance: 10}]}
+  }
+   TickManager('overworld')
+   let pos = getWorldPosition(entities[attacker], target.x,target.y)
+  damageHandler({mapId:entities[attacker].map,cy:pos.cy,cx:pos.cx,x:pos.x,y:pos.y}, {type: 'attack', damage: item.damage})
+}
+function damageHandler(target, source) {
+ let tentities = getEntityUUIDsAt(target.mapId,target.cx, target.cy,target.x, target.y)
+ players = []
+ tentities.forEach(euuid => {
+  entities[euuid].health.currentHealth -= source.damage
+  if(entities[euuid].health.currentHealth <= 0) {
+      let available
+        const mapHeight = map.length;
+  const mapWidth = map[0]?.length || 0;
+  for (let y=0; y < mapHeight; y++){
+      for (let x=0; x < mapWidth; x++){   
+        if(map[y][x].br.includes('g')) {
+          available = {x, y}
+        }
+      }
+  }
+   let respawnedplayer = addEntity('player', available.x, available.y, '@', '#404', {}, 'UserRandom')
+  setEntityData(respawnedplayer, 'socketId', getEntityData(euuid, 'socketId'))
+  sendOnlyTo(getEntityData(euuid, 'socketId'), 'clientPlayer', respawnedplayer)
+  delete entities[euuid]
+  assembleVisibleMaps()
+  euuid = respawnedplayer
+  updateMapNEntityData(euuid, 'lightweight')
+  }
+  playersSeeingEntity(euuid).forEach(p => {
+    players.push(p)
+  })
+ })
+ let uniqueplayers = uniqueDicts(players)
+ uniqueplayers.forEach(p => { updateMapNEntityData(p, 'lightweight') })
+}
+function uniqueDicts(arr) {
+  const seen = new Set();
+  return arr.filter(obj => {
+    const key = JSON.stringify(obj);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 let mapData = {map: [], playermovements: 0}
 function TickManager(currentMap) {
    mapData = {map: currentMap, playermovements: mapData.playermovements+1}
@@ -345,6 +441,52 @@ function TickManager(currentMap) {
     Tick(mapData.map)
     
    }
+}
+function playersSeeingEntity(targetUid) {
+  const target = entities[targetUid];
+  if (!target) return [];
+
+  const result = [];
+  const halfW  = Math.floor(chunkWidth  / 2);
+  const halfH  = Math.floor(chunkHeight / 2);
+
+  // absolute world coords of the target
+  const targetWX = target.cx * chunkWidth  + target.x;
+  const targetWY = target.cy * chunkHeight + target.y;
+
+  // iterate over every player
+  for (const viewerUid of getUIDsByType('player')) {
+    const viewer = entities[viewerUid];
+    if (!viewer) continue;
+    // only consider same map
+    if (viewer.map !== target.map) continue;
+
+    // absolute world coords of the viewer
+    const viewerWX = viewer.cx * chunkWidth  + viewer.x;
+    const viewerWY = viewer.cy * chunkHeight + viewer.y;
+
+    // offset from viewer to target
+    const dx = targetWX - viewerWX;
+    const dy = targetWY - viewerWY;
+
+    // map into the viewer’s mask-space [0..chunkWidth)
+    const rx = dx + halfW;
+    const ry = dy + halfH;
+
+    // within their window?
+    if (
+      rx >= 0 && rx < chunkWidth &&
+      ry >= 0 && ry < chunkHeight
+    ) {
+      const inFov  = viewer.fovMask[ry]?.[rx];
+      const inLight= viewer.lightMask[ry]?.[rx];
+      if (inFov || inLight) {
+        result.push(viewerUid);
+      }
+    }
+  }
+
+  return result;
 }
 function turnEntity(uid, dir){
   const e = entities[uid]; if(!e) return;
@@ -393,6 +535,26 @@ sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[
 function getPlayerBySocket(socketId) {
   return Object.entries(entities).filter(([id, e]) => getEntityData(id, 'socketId') === socketId)[0]
 }
+function getPlayerUuidBySocket(socketId) {
+  let returnitem
+     Object.entries(entities).forEach(([id2, e]) => {
+    if(getEntityData(id2, 'socketId') === socketId) {
+     returnitem = id2
+    }
+   })
+   return returnitem
+}
+function getEntityUUIDsAt(mapId, cx, cy, x, y) {
+  return Object.entries(entities)
+    .filter(([uid, e]) =>
+      e.map === mapId &&
+      e.cx  === cx    &&
+      e.cy  === cy    &&
+      e.x   === x     &&
+      e.y   === y
+    )
+    .map(([uid]) => uid);
+}
 function sendOnlyTo(sockId, channel, payload) {
   if (sockId) {
     io.to(sockId).emit(channel, payload);
@@ -423,7 +585,7 @@ function VisibleMapBase(width, height) {
 const chunkHeight = 32
 const chunkWidth = 32
 
-function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,chunky=0){
+function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,chunky=0, maxHealth =2,maxStamina=5){
   let visibleMap = VisibleMapBase(chunkWidth, chunkHeight)
   const uid = `${type}-${_nextEntityUID++}`;
   const initialSeenMatrix = Array.from(
@@ -438,9 +600,12 @@ function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,ch
       ]
     }
   };
-
   entities[uid] = {
     visibleMap,
+    stamina: {maxStamina, currentStamina: maxStamina},
+    inventory: [],
+    traits:[],
+    health: {maxHealth, currentHealth : maxHealth},
   seen,
   fovMask : Array.from({length:chunkHeight}, ()=>Array(chunkWidth).fill(false)),
   lightMask : Array.from({length: chunkHeight},()=>Array(chunkWidth).fill(false)),
@@ -461,8 +626,9 @@ function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,ch
   (typeIndex[type] ||= []).push(uid);
   return uid;
 }
+
 function generateMap(height, width) {
-  map = [];
+  let currentmap = [];
   for (let y = 0; y < height; y++) {
     const row = [];
     for (let x = 0; x < width; x++) {
@@ -474,8 +640,9 @@ function generateMap(height, width) {
         meta: {}
       });
     }
-    map.push(row);
+    currentmap.push(row);
   }
+  return currentmap
 }
 function generateProceduralMap(id, height, width, chunk, state) {
   let data = []
@@ -728,13 +895,13 @@ function clearFovMask(playerUid){
 
 
 
-
 function Tick(mapId) {
   const H = chunkHeight, W = chunkWidth;
 
   // for each player…
   getUIDsByType('player').forEach(uid => {
     const p = entities[uid];
+    if(p === undefined) return
 
     // 1) build the 32×32 tile window around the player
     const viewMap = calculateRelativeChunk(
@@ -959,7 +1126,7 @@ function roomCarverPopulator(currentMap) {
     for (let y = ry; y < ry + rh; y++) for (let x = rx; x < rx + rw; x++) {
       currentMap[y][x].base = ".";
       currentMap[y][x].name = "Floor";
-      currentMap[y][x].br = [];
+      currentMap[y][x].br = ['g'];
       setCellColor(x, y, "#111");
     }
     // Record center
@@ -1110,6 +1277,7 @@ const woodblock = {base:'#*', name:'Wood Wall', color: '#412', br: ['W']}
 const hut = [
   [woodblock,woodblock,woodblock]
 ]
+let unique_basic_dungeonID = 0
 function overworldPlainsGen(currentMap, x, y, cell, cx, cy, mapId, state = true) {
       if (cell.base === ".") {
         cell.base = ".";
@@ -1119,12 +1287,26 @@ function overworldPlainsGen(currentMap, x, y, cell, cx, cy, mapId, state = true)
       }
       if(Math.random() < 0.01 && state) {
         placeStructureInChunk(mapId, cx, cy, x, y, hut)
-        console.log(cx, cy, x, y)
+      //  console.log(cx, cy, x, y)
       }
+      if(Math.random() < 0.001 && cell.base === "." && state) {
+        unique_basic_dungeonID += 1
+        cell.base = "D";
+        cell.name = "Basic Dungeon Entrance";
+        cell.br = ['s'];
+        cell.color = "#222"
+        cell.structure_id = 'basic_dungeon'+unique_basic_dungeonID
+      }
+}
+function basicDungeonContents(currentMap, x, y, cell, cx, cy, mapId, state = true) {
+roomCarverPopulator(currentMap)
+//TorchPlacer(currentMap, x, y, cell)
 }
 function ChunkgenPicker(mapID) {
 if(mapID === 'overworld') {
   return overworldPlainsGen
+} else {
+  return basicDungeonContents
 }
 }
 function increaseTime(mapId = 'overworld')  {
@@ -1141,9 +1323,42 @@ if (maps[mapID].time == null && mapID === 'overworld') {
   setInterval(increaseTime, 3600);
 }
 
-if(mapID === 'overworld' && maps[mapID].time <= 1000) {
+if(mapID === 'overworld' && Math.floor(maps[mapID].time/1000) % 2 === 0) {
+  if(entities[uid].map === mapID) {
   entities[uid].FOV_RADIUS = 12
   entities[uid].lightMask = Array.from({length: chunkHeight},()=>Array(chunkWidth).fill(true))
+  }
+}
+if(mapID === 'overworld') {
+  let entity = entities[uid]
+ let chunk = getChunkByMapId(mapID, entity.cx,entity.cy, false )
+if(chunk.data[entity.y][entity.x].br.includes('s')) {
+  let cell = chunk.data[entity.y][entity.x]
+  if(cell.name === "Basic Dungeon Entrance") {
+    dunegonId = cell.structure_id
+if(maps['basic_dungeon'+dunegonId] === undefined) {
+     generateProceduralMap('basic_dungeon'+dunegonId, chunkHeight, chunkWidth, {y: 0, x:0})
+     let currentmap = maps['basic_dungeon'+dunegonId]
+      generateMapContentsCircularForChunk(currentmap.type, 0, 0, ChunkgenPicker(currentmap.type), false)
+      console.log(currentmap.type)
+}
+let currentmap = maps['basic_dungeon'+dunegonId]
+    entities[uid].map = currentmap.type
+    let mapdata = currentmap.map.chunks[0].data
+      for (let y=0; y < chunkHeight; y++){
+      for (let x=0; x < chunkWidth; x++){   
+        if(mapdata[y][x].br.includes('g')) {
+          entities[uid].x = x
+          entities[uid].y = y
+        }
+      }
+  }
+          entities[uid].cy = 0
+        entities[uid].cx = 0
+        assembleVisibleMaps(entities[uid].map)
+        sendOnlyTo(getEntityData(uid, "socketId"), "mapData", {map: {seen: entities[uid].seen[entities[uid].map],trueMapping: trueMappingWithSeenMapping(entities[uid].seen, maps, entities[uid].map), fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: 32, height: 32})
+  }
+}
 }
 assembleVisibleMaps(mapID)
 updateMapNEntityData(uid, 'lightweight')
@@ -1152,8 +1367,6 @@ updateMapNEntityData(uid, 'lightweight')
 generateProceduralMap('overworld', 32, 32, {x: 0, y: 0})
 map = maps['overworld'].map.chunks[0].data
 
-  //generateMapContentsCircular(map, roomCarverPopulator);
-  //generateMapContentsCircular(map, TorchPlacer);
   generateMapContentsCircularForChunk('overworld', 0, 0, ChunkgenPicker('overworld'))
     })();
 

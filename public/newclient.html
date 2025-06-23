@@ -16,13 +16,12 @@ html, body {
   background: #111;
   overflow: hidden;
 }
-/* canvases are stacked and centred, but never stretched */
+
 canvas {
   position: absolute;
   top: 50%;  left: 50%;
   transform: translate(-50%, -50%);
-  /* no width / height rules here */
-  image-rendering: pixelated;   /* crisp ASCII */
+  image-rendering: pixelated;   
 }
 #entityCanvas,
 #fogCanvas {
@@ -31,7 +30,58 @@ canvas {
 #mapCanvas {
   pointer-events: auto;
 }
+#ui-container {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  display: flex;
+  gap: 4px;
+}
+#textInput {
+  padding: 4px;
+  font-size: 14px;
+}
+#textSubmit {
+  padding: 4px 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
 
+#app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  overflow: hidden; /* just in case */
+}
+#hotbar-container {
+  flex: 0 0 160px;      /* never grows or shrinks, stays 160px */
+  background: #222;     /* so you can see it even if the canvas is empty */
+  overflow: hidden;     /* clip anything that overflows */
+  display: flex;        /* lets us easily center the canvas */
+  align-items: start;   /* top‐align the canvas */
+  justify-content: center;/* center horizontally */
+}
+
+/* Canvas must fill its container’s full area */
+#hotbarCanvas {
+  display: block;       /* remove any inline gap */
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+
+/* your game area to the right */
+#game-container {
+  flex: 3 1 auto;
+  position: relative;
+  background: #000;
+}
+#highlightCanvas {
+  pointer-events: none;
+}
 
 
     
@@ -68,11 +118,23 @@ canvas {
   <div id="sideTitle" style="font-weight:bold; margin-bottom:8px;"></div>
   <div id="sideBody"></div>
 </div>
+<!-- put this just inside your <body> -->
+<div id="ui-container">
+  <input type="text" id="textInput" placeholder="New Username.." />
+  <button id="textSubmit">Submit</button>
+</div>
 
-  <div id="game-container">
-    <canvas id="mapCanvas"></canvas>
-    <canvas id="entityCanvas"></canvas>
-    <canvas id="fogCanvas"></canvas>
+  <div id="app">
+     <div id="hotbar-container">
+    <canvas id="hotbarCanvas"></canvas>
+  </div>
+
+    <div id="game-container">
+      <canvas id="mapCanvas"></canvas>
+      <canvas id="entityCanvas"></canvas>
+      <canvas id="fogCanvas"></canvas>
+      <canvas id="highlightCanvas"></canvas>
+    </div>
   </div>
 
   <!-- your socket.io script + client.js below -->
