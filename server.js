@@ -389,7 +389,7 @@ function attackHandler(attacker, target, item) {
   }
    TickManager('overworld')
    let pos = getWorldPosition(entities[attacker], target.x,target.y)
-  damageHandler({mapId:entities[attacker].map,cy:pos.cy,cx:pos.cx,x:pos.x,y:pos.y}, {type: 'attack', damage: item.damage})
+  damageHandler({mapId:entities[attacker].map,cy:pos.cy,cx:pos.cx,x:pos.x,y:pos.y}, {type: 'attack', damage: item.damage, attacker})
 }
 function damageHandler(target, source) {
  let tentities = getEntityUUIDsAt(target.mapId,target.cx, target.cy,target.x, target.y)
@@ -397,7 +397,18 @@ function damageHandler(target, source) {
  tentities.forEach(euuid => {
   entities[euuid].health.currentHealth -= source.damage
   if(entities[euuid].health.currentHealth <= 0) {
-      let available
+    deathHandler(euuid, source)
+  }
+  playersSeeingEntity(euuid).forEach(p => {
+    players.push(p)
+  })
+ })
+ let uniqueplayers = uniqueDicts(players)
+ uniqueplayers.forEach(p => { updateMapNEntityData(p, 'lightweight') })
+}
+function deathHandler(euuid, source) {
+if(entities[euuid].type === 'player') {
+        let available
         const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
   for (let y=0; y < mapHeight; y++){
@@ -414,13 +425,27 @@ function damageHandler(target, source) {
   assembleVisibleMaps()
   euuid = respawnedplayer
   updateMapNEntityData(euuid, 'lightweight')
-  }
+} else
+ if(entities[euuid].type === 'chest')
+   {
+    let attacker = source.attacker
+    entities[euuid].inventory.forEach(i=> {
+      let newItem = i
+      newItem.slot = 'hotbar'
+      entities[attacker].inventory.push(newItem)
+    }) 
+    delete entities[euuid]
+} 
+else {
+delete entities[euuid]
+}
+assembleVisibleMaps()
   playersSeeingEntity(euuid).forEach(p => {
-    players.push(p)
+    updateMapNEntityData(p, 'lightweight')
   })
- })
- let uniqueplayers = uniqueDicts(players)
- uniqueplayers.forEach(p => { updateMapNEntityData(p, 'lightweight') })
+}
+function itemHandler(i, target) {
+
 }
 function uniqueDicts(arr) {
   const seen = new Set();
@@ -605,6 +630,7 @@ function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,ch
     stamina: {maxStamina, currentStamina: maxStamina},
     inventory: [],
     traits:[],
+    slots:{hotbar:4},
     health: {maxHealth, currentHealth : maxHealth},
   seen,
   fovMask : Array.from({length:chunkHeight}, ()=>Array(chunkWidth).fill(false)),
@@ -1297,6 +1323,11 @@ function overworldPlainsGen(currentMap, x, y, cell, cx, cy, mapId, state = true)
         cell.color = "#222"
         cell.structure_id = 'basic_dungeon'+unique_basic_dungeonID
       }
+        if(Math.random() < 0.001 && cell.base === "." && state) {
+         let chest = addEntity('chest', x, y, 'C', '#442', {br:['S']}, 'Treasure Chest', currentMap.type, cx, cy, 2, 0)
+         let sword = {slot: 'inventory', damage: 5, name:'Iron Sword', char: "S"}
+         entities[chest].inventory.push(sword)
+        }
 }
 function basicDungeonContents(currentMap, x, y, cell, cx, cy, mapId, state = true) {
 roomCarverPopulator(currentMap)

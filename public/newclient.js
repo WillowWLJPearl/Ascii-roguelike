@@ -366,6 +366,7 @@ document.addEventListener('keydown', e => {
       readyToAttack.state = false
         highlightPos = null;
     } else {
+      readyToAttack.item = selectedHotbarItem || {}
       readyToAttack.state = true
     }
   }
@@ -737,8 +738,6 @@ const hotbarCanvas = document.getElementById('hotbarCanvas');
 const hotbarCtx    = hotbarCanvas.getContext('2d');
 const hotbarContainer = document.getElementById('hotbar-container');
 
-
-const HOTBAR_SLOTS    = 5;
 // Call this whenever you resetCamera() or resize:
 function resizeHotbar() {
   // container’s CSS size via getBoundingClientRect
@@ -748,28 +747,99 @@ function resizeHotbar() {
 }
 
 function drawHotbar() {
+  const player   = entities[currentplayer];
+  const inv      = player.inventory || [];
+  const HOTBARS  = player.slots.hotbar || 0;
+  const hotbar   = inv.filter(i=>i.slot==='hotbar');
+
   hotbarCtx.resetTransform();
-  hotbarCtx.clearRect(0, 0, hotbarCanvas.width, hotbarCanvas.height);
+  hotbarCtx.clearRect(0,0,hotbarCanvas.width,hotbarCanvas.height);
 
-  const W = hotbarCanvas.width;
-  const H = hotbarCanvas.height;
-  const slotH = H / HOTBAR_SLOTS;
+  const W     = hotbarCanvas.width;
+  const H     = hotbarCanvas.height;
+  const slotH = H / HOTBARS;
 
-  hotbarCtx.textAlign    = 'center';
-  hotbarCtx.textBaseline = 'middle';
-  hotbarCtx.font         = `${Math.floor(slotH * 0.6)/2}px sans-serif`;
-  hotbarCtx.fillStyle    = '#FFF';
-  hotbarCtx.strokeStyle  = '#000';
-  hotbarCtx.lineWidth    = 2;
-
-  for (let i = 0; i < HOTBAR_SLOTS; i++) {
+  for (let i = 0; i < HOTBARS; i++) {
     const y = i * slotH;
+
+    // if this slot is selected, draw a thicker yellow border:
+    if (i === selectedHotbarSlot) {
+      hotbarCtx.strokeStyle = 'yellow';
+      hotbarCtx.lineWidth   = 4;
+    } else {
+      hotbarCtx.strokeStyle = '#FFF';
+      hotbarCtx.lineWidth   = 2;
+    }
     hotbarCtx.strokeRect(0, y, W, slotH);
-    const cy = y + slotH/2;
-    hotbarCtx.strokeText(`Slot ${i+1}`, W/2, cy);
-    hotbarCtx.fillText  (`Slot ${i+1}`, W/2, cy);
+
+    const item = hotbar[i];
+    if (item) {
+      const cx = W/2, cy = y + slotH/2;
+      // draw char
+      if (item.char) {
+        hotbarCtx.font         = `${Math.floor(slotH*0.6)}px monospace`;
+        hotbarCtx.fillStyle    = '#FFF';
+        hotbarCtx.textAlign    = 'center';
+        hotbarCtx.textBaseline = 'middle';
+        hotbarCtx.fillText(item.char, cx, cy - slotH*0.1);
+      }
+      // draw name
+      hotbarCtx.font         = `${Math.floor(slotH*0.25)}px sans-serif`;
+      hotbarCtx.textAlign    = 'center';
+      hotbarCtx.textBaseline = 'top';
+      hotbarCtx.fillText(item.name||'', cx, cy + slotH*0.1);
+      // draw quantity
+      if (item.quantity != null) {
+        hotbarCtx.font         = `${Math.floor(slotH*0.25)}px monospace`;
+        hotbarCtx.textAlign    = 'right';
+        hotbarCtx.textBaseline = 'bottom';
+        hotbarCtx.fillText(
+          item.quantity,
+          W - slotH*0.1,
+          y + slotH - slotH*0.1
+        );
+      }
+    }
   }
 }
+
+// Global state:
+let selectedHotbarSlot = 0;    // index 0…HOTBARS–1
+let selectedHotbarItem = null; // the actual item object
+
+function updateSelectedItem() {
+  const player   = entities[currentplayer];
+  const hotbar   = player.inventory.filter(i => i.slot==='hotbar');
+  selectedHotbarItem = hotbar[selectedHotbarSlot] || null;
+}
+
+document.addEventListener('keydown', e => {
+  // only digits 1…HOTBARS
+  const n = parseInt(e.key, 10);
+  const HOTBARS = entities[currentplayer].slots.hotbar;
+  if (!isNaN(n) && n >= 1 && n <= HOTBARS) {
+    selectedHotbarSlot = n - 1;
+    updateSelectedItem();
+    drawHotbar();
+    // now `selectedHotbarItem` holds your newly selected item
+    console.log('Selected hotbar item:', selectedHotbarItem);
+  }
+});
+hotbarCanvas.addEventListener('click', e => {
+  const rect = hotbarCanvas.getBoundingClientRect();
+  const mx   = e.clientX - rect.left;
+  const my   = e.clientY - rect.top;
+  const HOTBARS = entities[currentplayer].slots.hotbar;
+  const slotH  = hotbarCanvas.height / HOTBARS;
+  // compute which slot
+  const i = Math.floor(my / slotH);
+  if (i >= 0 && i < HOTBARS) {
+    selectedHotbarSlot = i;
+    updateSelectedItem();
+    drawHotbar();
+    console.log('Selected hotbar item:', selectedHotbarItem);
+  }
+});
 
 
 // Integrate into your render loop / resize logic
@@ -780,6 +850,8 @@ function onResizeOrReset() {
   drawBaseMap();
   drawEntities();
   drawFog();
-  drawHotbar();
+updateSelectedItem();
+drawHotbar();
+
 }
 
