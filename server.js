@@ -3,6 +3,7 @@ const path    = require('path');
 const express = require('express');
 const http    = require('http');
 const { Server } = require('socket.io');
+const storage = require('./storage');
 
 const app    = express();
 const server = http.createServer(app);
@@ -103,9 +104,17 @@ function moveEntity(uid, dx, dy) {
   assembleVisibleMaps();
   return true;
 }
+function markChunkDirty(mapId, cx, cy) {
+  const chunk = maps[mapId]?.map?.chunks.find(c => c.x === cx && c.y === cy);
+  if (chunk) storage.queueSaveChunk(mapId, cx, cy, chunk.data);
+}
+function touchEntity(uid) {
+  if (entities[uid]) storage.queueSaveEntity(uid, entities[uid]);
+}
 
 
-function entitiesInFovDetailed(viewer) {
+function entitiesInFovDetailed(viewerUid) {
+  const viewer = entities[viewerUid];
   const halfW = Math.floor(chunkWidth  / 2);
   const halfH = Math.floor(chunkHeight / 2);
 
@@ -114,8 +123,14 @@ function entitiesInFovDetailed(viewer) {
   const vwy = viewer.cy * chunkHeight + viewer.y;
 
   const visible = {};
+    visible[viewerUid] = projectEntityForClient(
+    viewer,
+    halfW,               // x in window
+    halfH,               // y in window
+    viewerUid
+  );
   for (const [uid, e] of Object.entries(entities)) {
-    if (uid === viewer.uid) continue;  // don’t send the viewer itself here
+    if (uid === viewerUid) continue;   // don’t send the viewer itself here
 
     // 1) entity absolute world coords
     const ewx = e.cx * chunkWidth  + e.x;
@@ -135,12 +150,7 @@ function entitiesInFovDetailed(viewer) {
     const lit      = viewer.lightMask[ry]?.[rx];
 
     if (inBounds && (inFov || lit) && viewer.map === e.map) {
-      // clone and overwrite x/y to the relative window coords
-      visible[uid] = {
-        ...e,
-        x: rx,
-        y: ry
-      };
+      visible[uid] = projectEntityForClient(e, rx, ry, uid);
     }
   }
 
@@ -289,7 +299,7 @@ io.on('connection', socket => {
 
   sendOnlyTo(socket.id, 'clientPlayer', newplayer)
   
-  sendOnlyTo(socket.id, "entityData", {list: entitiesInFovDetailed(entities[newplayer]), changed: newplayer})
+  sendOnlyTo(socket.id, "entityData", {list: entitiesInFovDetailed(newplayer), changed: newplayer})
   
 
   // broadcast join to others
@@ -517,6 +527,7 @@ function turnEntity(uid, dir){
   const e = entities[uid]; if(!e) return;
   e.dir = dir;
   (entities[uid] ||= {}).top = [ {up:'↑',down:'↓',left:'←',right:'→'}[dir] ];
+  storage.queueSaveEntity(uid, entities[uid]);
 assembleVisibleMaps()
 
 }
@@ -533,7 +544,7 @@ function updateMapNEntityData(uid, protocol = 'noAction', data, batch = false) {
       const mapHeight = map.length;
   const mapWidth = map[0]?.length || 0;
 
-  let firstPerPlayerInstanceData = {entity: entities[uid], seenEntities: entitiesInFovDetailed(entities[uid])}
+  let firstPerPlayerInstanceData = {entity: entities[uid], seenEntities: entitiesInFovDetailed(uid)}
 /*
   if(protocol === 'move') {
 
@@ -550,11 +561,11 @@ sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFo
   revealFOV(uid)
   assembleVisibleMaps()
   if(protocol === 'noAction') {
-    sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
+    sendOnlyTo(getEntityData(uid, 'socketId'), "entityData", {list: entitiesInFovDetailed(uid), changed: uid})
 sendOnlyTo(getEntityData(uid, 'socketId'), 'mapData',{map: {lightMask: entities[uid].lightMask, trueMapping: trueMappingWithSeenMapping(entities[uid].seen, maps, entities[uid].map),seen: entities[uid].seen[entities[uid].map], fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight} )
   } else
     if(protocol ==='lightweight') {
-    sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovDetailed(entities[uid]), changed: uid})
+    sendOnlyTo(getEntityData(uid, 'socketId'), "mapNEntityData", {list: entitiesInFovDetailed(uid), changed: uid})
   }
 }
 function getPlayerBySocket(socketId) {
@@ -626,6 +637,7 @@ function addEntity(type,x,y,char,color,overlays,name,map='overworld',chunkx=0,ch
     }
   };
   entities[uid] = {
+    uid,
     visibleMap,
     stamina: {maxStamina, currentStamina: maxStamina},
     inventory: [],
@@ -696,6 +708,7 @@ function generateProceduralMap(id, height, width, chunk, state) {
   }
   let chunks = maps[id].map.chunks
   chunks.push({x: chunk.x, y: chunk.y, data})
+  storage.saveChunkSync(id, chunk.x, chunk.y, data);
 generateMapContentsCircularForChunk(id, chunk.x, chunk.y, ChunkgenPicker(id), state)
 }
 // half-angle of cone in radians (45° here)
@@ -716,6 +729,43 @@ function bresenhamLine(x0, y0, x1, y1) {
     if (e2 <= dx) { err += dx; y0 += sy; }
   }
   return pts;
+}
+function projectEntityForClient(e, rx, ry, viewerUid) {
+  const isSelf = e.uid === viewerUid;
+
+  // only include the current map's seen tree to avoid "everything I've ever seen"
+  const seenForCurrentMap = (isSelf && e.seen && e.seen[e.map])
+    ? { [e.map]: e.seen[e.map] }
+    : undefined;
+
+  return {
+    // identity & basics
+    uid:   e.uid,
+    type:  e.type,
+    name:  e.name,
+    char:  e.char,
+    color: e.color,
+    dir:   e.dir,
+    overlays: { top: e.top, bl: e.bl, br: e.br },
+    health:  e.health,
+    stamina: e.stamina,
+
+    // position in the viewer's 32×32 window
+    x: rx,
+    y: ry,
+
+    // world anchoring (always safe)
+    map: e.map,
+
+    // map-view fields — included only for the viewer’s own entity
+    visibleMap: isSelf ? e.visibleMap : undefined,
+    fovMask:    isSelf ? e.fovMask    : undefined,
+    lightMask:  isSelf ? e.lightMask  : undefined,
+    seen:       seenForCurrentMap,
+
+    // optional flag the client can ignore
+    viewRedacted: !isSelf
+  };
 }
 
 // returns true if the vector (dx,dy) lies within the cone of `dir`
@@ -857,17 +907,25 @@ function markGlobalSeen(uid, relX, relY) {
 }
 
 function getChunkByMapId(mapId, cx, cy, state) {
-  const mapObj = maps[mapId];
-  if (!mapObj) throw new Error(`map "${mapId}" not found`);
-  let chunk = mapObj.map.chunks.find(c => c.x === cx && c.y === cy);
+  if (!maps[mapId]) maps[mapId] = { map: { chunks: [] }, type: mapId, time: 0 };
+
+  let chunk = maps[mapId].map.chunks.find(c => c.x === cx && c.y === cy);
   if (!chunk) {
-    // generateProceduralMap will push a new chunk into maps[mapId].map.chunks
+    // try disk
+    const disk = storage.loadChunkSync(mapId, cx, cy);
+    if (disk) {
+      chunk = { x: cx, y: cy, data: disk };
+      maps[mapId].map.chunks.push(chunk);
+      return chunk;
+    }
+    // generate new, then save to disk
     generateProceduralMap(mapId, chunkHeight, chunkWidth, { x: cx, y: cy }, state);
-    chunk = mapObj.map.chunks.find(c => c.x === cx && c.y === cy);
-    if (!chunk) throw new Error(`failed to generate chunk ${cx},${cy}`);
+    chunk = maps[mapId].map.chunks.find(c => c.x === cx && c.y === cy);
+    storage.saveChunkSync(mapId, cx, cy, chunk.data);
   }
-  return chunk;      // chunk.data is your 2D array of tiles
+  return chunk;
 }
+
 
 // _2_ build a CH×CW “view” centered on the world‐cell at (cy, cx, y, x)
 function calculateRelativeChunk(mapId, cy, cx, y, x) {
@@ -1116,6 +1174,7 @@ function generateMapContentsCircularForChunk(mapId, cx, cy, cb, state) {
       }
     }
   }
+  storage.queueSaveChunk(mapId, cx, cy, currentMap);
 }
 function setCellColor(currentMap, x, y, color) {
   if (!currentMap[y] || !currentMap[y][x]) return;
@@ -1289,6 +1348,7 @@ function placeStructure(mapId, originWorldX, originWorldY, structTiles) {
         name:  tile.name,
         meta:  { ...(tile.meta || {}) }
       };
+          storage.queueSaveChunk(mapId, cX, cY, chunk.data);
     }
   }
 }
@@ -1344,6 +1404,7 @@ function increaseTime(mapId = 'overworld')  {
   Object.values(entities).forEach(e => { 
     if(e.map === mapId) {
       maps[mapId].time += 1;
+      storage.saveMapMetaSync(mapId, { time: maps[mapId].time });
     }
   })
 }
@@ -1395,11 +1456,22 @@ assembleVisibleMaps(mapID)
 updateMapNEntityData(uid, 'lightweight')
 }
 (async ()=>{
-generateProceduralMap('overworld', 32, 32, {x: 0, y: 0})
-map = maps['overworld'].map.chunks[0].data
+  // Rehydrate entities from disk (if any)
+  maps['overworld'] = maps['overworld'] || { map: { chunks: [] }, type: 'overworld', time: 0 };
+maps['overworld'].time = storage.loadMapMetaSync('overworld').time || 0;
 
-  generateMapContentsCircularForChunk('overworld', 0, 0, ChunkgenPicker('overworld'))
-    })();
+for (const [uid, ent] of storage.loadAllEntitiesSync()) {
+  entities[uid] = ent;
+  (typeIndex[ent.type] ||= []).push(uid);
+}
+
+  // ensure overworld chunk 0,0 exists (load or gen+save)
+  const c00 = getChunkByMapId('overworld', 0, 0, true);
+  global.map = c00.data; // keep your alias
+  generateMapContentsCircularForChunk('overworld', 0, 0, ChunkgenPicker('overworld'));
+  storage.queueSaveChunk('overworld', 0, 0, c00.data);
+})();
+
 
 server.listen(8000, '0.0.0.0', () => {
   console.log('▶ listening on http://localhost:8000');
