@@ -1,6 +1,91 @@
 
 
-  const socket = io();
+  // ==== NEW: auth gate ====
+let authed = false;
+
+// Socket first (we'll auth before doing anything else)
+const socket = io();
+
+// Simple overlay UI for login/register
+(function createAuthOverlay() {
+  const overlay = document.createElement('div');
+  overlay.id = 'auth-overlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,0.7); z-index:99999; font-family:system-ui, sans-serif;
+  `;
+
+  overlay.innerHTML = `
+    <div style="background:#1e1e1e; color:#fff; width:min(420px, 92vw); padding:20px 18px; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.4);">
+      <h2 style="margin:0 0 12px; font-size:20px; font-weight:700;">Welcome</h2>
+      <p style="margin:0 0 16px; opacity:.85;">Log in or create a new account to continue.</p>
+      <form id="auth-form">
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+          <button type="button" data-mode="login"  class="mode-btn active"  style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid #444; background:#2a2a2a; color:#fff; cursor:pointer;">Login</button>
+          <button type="button" data-mode="register" class="mode-btn"       style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid #444; background:#2a2a2a; color:#fff; cursor:pointer;">Register</button>
+        </div>
+        <label style="display:block; font-size:12px; opacity:.8; margin:8px 0 4px;">Username</label>
+        <input id="auth-username" type="text" autocomplete="username" required
+               style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid #444; background:#111; color:#fff;">
+        <label style="display:block; font-size:12px; opacity:.8; margin:12px 0 4px;">Password</label>
+        <input id="auth-password" type="password" autocomplete="current-password" required
+               style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid #444; background:#111; color:#fff;">
+
+        <div id="auth-error" style="color:#ff6b6b; min-height:18px; margin:10px 0 0;"></div>
+
+        <button id="auth-submit" type="submit"
+                style="margin-top:14px; width:100%; padding:10px 12px; border-radius:10px; border:1px solid #555; background:#3b82f6; color:#fff; font-weight:700; cursor:pointer;">
+          Continue
+        </button>
+      </form>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  let mode = 'login';
+  const btns = overlay.querySelectorAll('.mode-btn');
+  btns.forEach(b => b.addEventListener('click', () => {
+    btns.forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    mode = b.getAttribute('data-mode');
+    // update button text
+    overlay.querySelector('#auth-submit').textContent = mode === 'login' ? 'Log In' : 'Create Account';
+  }));
+
+  const form = overlay.querySelector('#auth-form');
+  const userEl = overlay.querySelector('#auth-username');
+  const passEl = overlay.querySelector('#auth-password');
+  const errEl  = overlay.querySelector('#auth-error');
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    errEl.textContent = '';
+    const username = (userEl.value || '').trim();
+    const password = (passEl.value || '').trim();
+    if (!username || !password) {
+      errEl.textContent = 'Please enter both a username and password.';
+      return;
+    }
+    // send auth request
+    socket.emit('auth', { mode, username, password });
+    overlay.querySelector('#auth-submit').disabled = true;
+    overlay.querySelector('#auth-submit').textContent = 'Checking...';
+  });
+
+  // handle server responses
+  socket.on('auth:ok', ({ username }) => {
+    authed = true;
+    overlay.remove();
+  });
+  socket.on('auth:error', (e) => {
+    authed = false;
+    errEl.textContent = e?.message || 'Authentication failed.';
+    overlay.querySelector('#auth-submit').disabled = false;
+    overlay.querySelector('#auth-submit').textContent = mode === 'login' ? 'Log In' : 'Create Account';
+  });
+})();
+
     const container    = document.getElementById('game-container');
     const mapCanvas    = document.getElementById('mapCanvas');
     const entityCanvas = document.getElementById('entityCanvas');
@@ -24,9 +109,11 @@ atlas.onload = () => {
   atlasReady = true;
   console.log('✅ wall2.png loaded');
   // Force a redraw of everything:
+  if (map) {    
   resetCamera();
   drawBaseMap();
   drawEntities();   // make sure you redraw sprites for entities too
+  }
 };
 atlas.onerror = () => {
   console.error('❌ failed to load /sprites/wall.png');
@@ -56,6 +143,7 @@ const cam = {
 
 
 function resetCamera() {
+     if (!map) return;  
   const rows = map.length;
   const cols = map[0]?.length || 0;
 
@@ -124,6 +212,7 @@ function applyCam(ctx) {
     }
 
 function drawBaseMap() {
+     if (!map) return;  
   mapCtx.resetTransform();
   mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
   applyCam(mapCtx);
@@ -178,6 +267,7 @@ function drawBaseMap() {
 }
 
 function drawEntities(playerId = currentplayer) {
+    if (!entities) return;
   entityCtx.resetTransform();
   entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
   applyCam(entityCtx);
@@ -274,6 +364,7 @@ function drawEntities(playerId = currentplayer) {
 const chunkHeight = 32
 const chunkWidth = 32
 function drawFog() {
+    if (!map || !fovMask || !lightMask) return; 
   if (debugNoFog) return;
   fogCtx.resetTransform();
   fogCtx.clearRect(0, 0, fogCanvas.width, fogCanvas.height);
@@ -332,14 +423,16 @@ function drawFog() {
 }
 
 
+let highlightPos = null;
+
 
 function renderLoop() {
-  onResizeOrReset()
   drawEntities();
   drawFog();
-drawOverlay()
+  drawOverlay();
   requestAnimationFrame(renderLoop);
 }
+
 // assuming mapCanvas is your <canvas> element
 mapCanvas.addEventListener('mousedown', e => {
   // only handle left button
@@ -379,41 +472,24 @@ let hoverTile = null;
 let hoverText = '';
 
 mapCanvas.addEventListener('mousemove', e => {
-  if (!readyToAttack.state) {
-    hoverTile = null;
-    hoverText = '';
-    return;
-  }
+  if (!readyToAttack.state) { hoverTile=null; hoverText=''; return; }
+  if (!entities || !currentplayer || !entities[currentplayer]) { hoverTile=null; hoverText=''; return; }
+
   const { tileX, tileY } = screenToTile(e);
-
-  // bounds check
-  if (
-    tileX < cam.x || tileX >= cam.x + cam.w ||
-    tileY < cam.y || tileY >= cam.y + cam.h
-  ) {
-    hoverTile = null;
-    hoverText = '';
-    return;
+  if (tileX < cam.x || tileX >= cam.x + cam.w || tileY < cam.y || tileY >= cam.y + cam.h) {
+    hoverTile=null; hoverText=''; return;
   }
 
-  // your “attackable” condition (tweak as needed)
   const px = entities[currentplayer].x;
   const py = entities[currentplayer].y;
-  // example: only highlight if the target tile is adjacent
   if (Math.abs(tileX - px) + Math.abs(tileY - py) === 1) {
     hoverTile = { x: tileX, y: tileY };
-    // build whatever text you want here:
-    const cell = map[tileY][tileX];
-    let name
-    if(!readyToAttack?.item?.name) {
-      name = 'Fist'
-    } else {name = readyToAttack.item.name}
-    hoverText = `${name}`;
+    hoverText = (readyToAttack?.item?.name) || 'Fist';
   } else {
-    hoverTile = null;
-    hoverText = '';
+    hoverTile=null; hoverText='';
   }
 });
+
 
 mapCanvas.addEventListener('mouseleave', () => {
   hoverTile = null;
@@ -454,19 +530,19 @@ function drawOverlay() {
 
 
 function resizeOverlay() {
-  // 1) match the highlight buffer to the map buffer
   highlightCanvas.width  = mapCanvas.width;
   highlightCanvas.height = mapCanvas.height;
-  // 2) match the CSS size exactly
   highlightCanvas.style.width  = mapCanvas.style.width;
   highlightCanvas.style.height = mapCanvas.style.height;
 }
+
 
 
 document.addEventListener('keydown', e => {
   if (e.key.toLowerCase()==='m') {
     cam.full = !cam.full;
     resetCamera();
+    resizeOverlay();
     drawBaseMap();
   } else if (e.code === 'Space'){
     socket.emit('wait', { currentplayer });
@@ -498,29 +574,44 @@ document.addEventListener('keydown', e => {
     messageSend()
   }
 });
- socket.on('mapData', data => {
-   map       = data.map.map;
-   seen      = data.map.seen;
-   fovMask   = data.map.fovMask;
-   lightMask = data.map.lightMask;
+let loopStarted = false;
 
-   resetCamera()
-   drawBaseMap();
-   renderLoop();
- });
+socket.on('mapData', data => {
+  map       = data.map.map;
+  seen      = data.map.seen;
+  fovMask   = data.map.fovMask;
+  lightMask = data.map.lightMask;
+
+  resetCamera();
+resizeOverlay();
+  drawBaseMap();
+
+  if (!loopStarted) {
+    loopStarted = true;
+    requestAnimationFrame(renderLoop);
+  }
+});
+
  // dynamic updates come in via entityData _and_ mapNEntityData
- socket.on('entityData', data => {
-   entities = data.list;
- });
+socket.on('entityData', data => {
+  entities = data.list;
+  updateSelectedItem();
+  drawHotbar();
+});
+
 
     socket.on('clientPlayer', data => { 
 currentplayer = data
 //setInterval(checkTps, 1000);
 })
+  socket.on('tpsupdate', () => {
+      messageReceived()
+  })
 function checkTps() {
 lastMessageReceived++
 lastMessageSend++
 }
+
 function messageSend() {
 lastMessageSend = 0
 lastMessageReceived= 0
@@ -544,11 +635,9 @@ function assembleBoolMap(newmapinfo, mainmap) {
   return mainmap
 }
 socket.on('mapNEntityData', data => { 
-  messageReceived()
+
 
 entities = data.list
-entities[currentplayer].x = 16
-entities[currentplayer].y = 16
   seen = entities[currentplayer].seen['overworld']
   fovMask = entities[currentplayer].fovMask
 map = entities[currentplayer].visibleMap
@@ -557,7 +646,10 @@ lightMask = entities[currentplayer].lightMask
 }
    resetCamera()
    drawBaseMap();
-   renderLoop();
+  if (!loopStarted) {
+    loopStarted = true;
+    requestAnimationFrame(renderLoop);
+  }
 
       const container = document.getElementById('game-container');
 const cols = 17, rows = 13;           // our fixed viewport
@@ -568,6 +660,7 @@ const tile = Math.floor(Math.min(CW/cols, CH/rows));
 })
 window.addEventListener('resize', () => {
   if (!map) return;
+  onResizeOrReset();
   resetCamera();
   drawBaseMap();
 });
@@ -747,58 +840,56 @@ function resizeHotbar() {
 }
 
 function drawHotbar() {
-  const player   = entities[currentplayer];
-  const inv      = player.inventory || [];
-  const HOTBARS  = player.slots.hotbar || 0;
-  const hotbar   = inv.filter(i=>i.slot==='hotbar');
+  if (!entities || !currentplayer || !entities[currentplayer]) return;
+
+  const player  = entities[currentplayer];
+  const HOTBARS = player?.slots?.hotbar ?? 0;
+  if (!HOTBARS) return;
+
+  const inv    = player.inventory || [];
+  const hotbar = inv.filter(i => i.slot === 'hotbar');
+
+  // make sure the canvas has a non-zero buffer
+  resizeHotbar();
 
   hotbarCtx.resetTransform();
   hotbarCtx.clearRect(0,0,hotbarCanvas.width,hotbarCanvas.height);
 
-  const W     = hotbarCanvas.width;
-  const H     = hotbarCanvas.height;
+  const W = hotbarCanvas.width, H = hotbarCanvas.height;
+  if (!W || !H) return;
+
   const slotH = H / HOTBARS;
 
   for (let i = 0; i < HOTBARS; i++) {
     const y = i * slotH;
 
-    // if this slot is selected, draw a thicker yellow border:
-    if (i === selectedHotbarSlot) {
-      hotbarCtx.strokeStyle = 'yellow';
-      hotbarCtx.lineWidth   = 4;
-    } else {
-      hotbarCtx.strokeStyle = '#FFF';
-      hotbarCtx.lineWidth   = 2;
-    }
+    hotbarCtx.strokeStyle = (i === selectedHotbarSlot) ? 'yellow' : '#FFF';
+    hotbarCtx.lineWidth   = (i === selectedHotbarSlot) ? 4 : 2;
     hotbarCtx.strokeRect(0, y, W, slotH);
 
     const item = hotbar[i];
-    if (item) {
-      const cx = W/2, cy = y + slotH/2;
-      // draw char
-      if (item.char) {
-        hotbarCtx.font         = `${Math.floor(slotH*0.6)}px monospace`;
-        hotbarCtx.fillStyle    = '#FFF';
-        hotbarCtx.textAlign    = 'center';
-        hotbarCtx.textBaseline = 'middle';
-        hotbarCtx.fillText(item.char, cx, cy - slotH*0.1);
-      }
-      // draw name
-      hotbarCtx.font         = `${Math.floor(slotH*0.25)}px sans-serif`;
-      hotbarCtx.textAlign    = 'center';
-      hotbarCtx.textBaseline = 'top';
-      hotbarCtx.fillText(item.name||'', cx, cy + slotH*0.1);
-      // draw quantity
-      if (item.quantity != null) {
-        hotbarCtx.font         = `${Math.floor(slotH*0.25)}px monospace`;
-        hotbarCtx.textAlign    = 'right';
-        hotbarCtx.textBaseline = 'bottom';
-        hotbarCtx.fillText(
-          item.quantity,
-          W - slotH*0.1,
-          y + slotH - slotH*0.1
-        );
-      }
+    if (!item) continue;
+
+    const cx = W/2, cy = y + slotH/2;
+
+    if (item.char) {
+      hotbarCtx.font = `${Math.floor(slotH*0.6)}px monospace`;
+      hotbarCtx.fillStyle = '#FFF';
+      hotbarCtx.textAlign = 'center';
+      hotbarCtx.textBaseline = 'middle';
+      hotbarCtx.fillText(item.char, cx, cy - slotH*0.1);
+    }
+
+    hotbarCtx.font = `${Math.floor(slotH*0.25)}px sans-serif`;
+    hotbarCtx.textAlign = 'center';
+    hotbarCtx.textBaseline = 'top';
+    hotbarCtx.fillText(item.name||'', cx, cy + slotH*0.1);
+
+    if (item.quantity != null) {
+      hotbarCtx.font = `${Math.floor(slotH*0.25)}px monospace`;
+      hotbarCtx.textAlign = 'right';
+      hotbarCtx.textBaseline = 'bottom';
+      hotbarCtx.fillText(item.quantity, W - slotH*0.1, y + slotH - slotH*0.1);
     }
   }
 }
@@ -808,38 +899,39 @@ let selectedHotbarSlot = 0;    // index 0…HOTBARS–1
 let selectedHotbarItem = null; // the actual item object
 
 function updateSelectedItem() {
-  const player   = entities[currentplayer];
-  const hotbar   = player.inventory.filter(i => i.slot==='hotbar');
+  if (!entities || !currentplayer || !entities[currentplayer]) {
+    selectedHotbarItem = null;
+    return;
+  }
+  const hotbar = (entities[currentplayer].inventory || []).filter(i => i.slot==='hotbar');
   selectedHotbarItem = hotbar[selectedHotbarSlot] || null;
 }
 
+
 document.addEventListener('keydown', e => {
-  // only digits 1…HOTBARS
   const n = parseInt(e.key, 10);
-  const HOTBARS = entities[currentplayer].slots.hotbar;
+  const HOTBARS = entities?.[currentplayer]?.slots?.hotbar || 0;
   if (!isNaN(n) && n >= 1 && n <= HOTBARS) {
     selectedHotbarSlot = n - 1;
     updateSelectedItem();
     drawHotbar();
-    // now `selectedHotbarItem` holds your newly selected item
-    console.log('Selected hotbar item:', selectedHotbarItem);
   }
 });
+
 hotbarCanvas.addEventListener('click', e => {
+  const HOTBARS = entities?.[currentplayer]?.slots?.hotbar || 0;
+  if (!HOTBARS) return;
   const rect = hotbarCanvas.getBoundingClientRect();
-  const mx   = e.clientX - rect.left;
   const my   = e.clientY - rect.top;
-  const HOTBARS = entities[currentplayer].slots.hotbar;
   const slotH  = hotbarCanvas.height / HOTBARS;
-  // compute which slot
   const i = Math.floor(my / slotH);
   if (i >= 0 && i < HOTBARS) {
     selectedHotbarSlot = i;
     updateSelectedItem();
     drawHotbar();
-    console.log('Selected hotbar item:', selectedHotbarItem);
   }
 });
+
 
 
 // Integrate into your render loop / resize logic
@@ -854,4 +946,3 @@ updateSelectedItem();
 drawHotbar();
 
 }
-

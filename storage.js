@@ -39,6 +39,23 @@ function loadChunkSync(mapId, cx, cy) {
 function saveChunkSync(mapId, cx, cy, data) {
   writeJSONSync(CHUNK_FILE(mapId, cx, cy), data);
 }
+function ENTITY_FILE(mapId) {
+  return path.join(MAP_DIR(mapId), `entities.json`);
+}
+
+function saveEntitiesSync(mapId, list) {
+  fs.mkdirSync(MAP_DIR(mapId), { recursive: true });
+  fs.writeFileSync(ENTITY_FILE(mapId), JSON.stringify(list, null, 2));
+};
+
+function loadEntitiesSync(mapId) {
+  try {
+    const raw = fs.readFileSync(ENTITY_FILE(mapId), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
 
 /* --- map meta (time, etc.) --- */
 function loadMapMetaSync(mapId) {
@@ -95,5 +112,7 @@ module.exports = {
   // map meta
   loadMapMetaSync, saveMapMetaSync,
   // entities
-  saveEntitySync, deleteEntitySync, loadAllEntitiesSync, queueSaveEntity
+  saveEntitySync, deleteEntitySync, loadAllEntitiesSync, queueSaveEntity,
+
+  saveEntitiesSync, loadEntitiesSync
 };

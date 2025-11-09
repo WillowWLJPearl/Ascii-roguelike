@@ -425,8 +425,7 @@ drawViewport(true)
 })
 
 //{map: {lightMask: entities[uid].lightMask, seen: entities[uid].seen, fovMask : entities[uid].fovMask, map: entities[uid].visibleMap}, width: mapWidth, height: mapHeight}
-socket.on('mapNEntityData', data => { 
-  messageReceived()
+socket.on('mapNEntityData', data => {
 
 entities = data.list
 

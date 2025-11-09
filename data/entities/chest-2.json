@@ -1,0 +1,1 @@
+{"uid":"chest-2","templateRef":{"id":"chest","diff":{}},"type":"chest","map":"overworld","cx":-1,"cy":1,"x":4,"y":10,"dir":"down","health":{"maxHealth":2,"currentHealth":2},"stamina":{"maxStamina":5,"currentStamina":5},"inventory":["sword"],"traits":[],"slots":{"hotbar":0},"meta":{}}
