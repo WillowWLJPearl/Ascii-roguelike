@@ -16,7 +16,7 @@ const { attackHandler } = require('./combat');
 const { trueMappingWithSeenMapping, getChunkByMapId } = require('./maps');
 
 const { createAccount, authenticate, linkEntityToAccount, getAccountById } = require('./accounts');
-
+const { spawnFromTemplate } = require('./entityFactory');
 const buffers = new Map();
 function sendOnlyTo(sockId, channel, payload) {
   if (!sockId) return;
@@ -51,15 +51,35 @@ function spawnOrReuseEntityForAccount(account, socket) {
     }
   }
 
-  const newUid = addEntity('player', spawn.x, spawn.y, '@', '#404', {}, account.username);
-  setEntityData(newUid, 'accountId', account.id);
-  setEntityData(newUid, 'socketId', socket.id);
-  attachSocket(newUid, socket.id);
+    const pos = {
+        map: 'overworld',
+        cx: 0,
+        cy: 0,
+        x: spawn.x,
+        y: spawn.y,
+    };
 
-  linkEntityToAccount(account.id, newUid);
-  storage.queueSaveEntity(newUid, state.entities[newUid]);
-  return newUid;
+    const overrides = {
+        // template props you want to override
+        name: account.username,
+        char: '@',
+        color: '#404',
+        meta: {
+            ...(state.entities?.meta || {}),
+            accountId: account.id,
+            socketId: socket.id,
+        },
+    };
+
+    const newUid = spawnFromTemplate('player', pos, overrides, true);
+
+    attachSocket(newUid, socket.id);
+    linkEntityToAccount(account.id, newUid);
+    // spawnFromTemplate already queued a save via serializeEntity
+    return newUid;
 }
+
+
 function getSocketsOnMap(mapId) {
   return Object.values(state.entities)
     .filter(e => e.type === 'player' && e.map === mapId && e.meta?.socketId)

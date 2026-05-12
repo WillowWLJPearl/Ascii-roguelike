@@ -5,7 +5,7 @@ const DIR_VECTORS = {
   down:  [ 0,  1],
   left:  [-1,  0],
 };
-
+const BITS_PER_TILE = 16;
 const HALF_CONE_RAD  = Math.PI / 4; // 45°
 const COS_HALF_CONE  = Math.cos(HALF_CONE_RAD);
 
@@ -16,4 +16,10 @@ const deltas4 = [
   { dx:  0, dy: -1 },
 ];
 
-module.exports = { DIR_VECTORS, HALF_CONE_RAD, COS_HALF_CONE, deltas4 };
+module.exports = {
+    DIR_VECTORS,
+    HALF_CONE_RAD,
+    COS_HALF_CONE,
+    deltas4,
+    BITS_PER_TILE,
+};

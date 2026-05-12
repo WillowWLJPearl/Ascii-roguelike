@@ -2,6 +2,7 @@
 // Templates can have inline functions (tick/spawn) and inherit via `extends`.
 const ENT_TEMPLATES = {
     base: {
+        speed: 0.16,
         type: 'entity',
         name: 'Entity',
         char: '?',

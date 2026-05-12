@@ -42,7 +42,7 @@ app.use(express.static(path.join(__dirname, 'public')));
   // sockets (after state is ready)
   wireSockets(io);
 
-  server.listen(8000, '0.0.0.0', () => {
-    console.log('▶ listening on http://localhost:8000');
+  server.listen(25555, '[::]', () => {
+    console.log('▶ listening on http://localhost:25555');
   });
 })();

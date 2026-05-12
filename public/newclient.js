@@ -131,70 +131,77 @@ wallImg.src = '/sprites/grass.png';
 atlas.onerror = () => {
   console.error('❌ failed to load /sprites/wall.png');
 };
+  const cam = {
+      x: 0, y: 0,
+      w: 0, h: 0,
+      full: false,   // toggle flag
+      subX: 0,       // fractional offset in tiles (for bits)
+      subY: 0
+  };
 
-const cam = {
-  x: 0, y: 0,
-  w: 0, h: 0,
-  full: false  // toggle flag
-};
+
 
     let map, seen, fovMask, lightMask, entities;
     let TILE = 16;
 
 
-function resetCamera() {
-     if (!map) return;  
-  const rows = map.length;
-  const cols = map[0]?.length || 0;
+  function resetCamera() {
+      if (!map) return;
+      const rows = map.length;
+      const cols = map[0]?.length || 0;
 
-  if (cam.full) {
-    // Full-map mode: show everything
-    cam.w = cols;
-    cam.h = rows;
-    cam.x = 0;
-    cam.y = 0;
+      if (cam.full) {
+          // Full-map mode: show everything
+          cam.w = cols;
+          cam.h = rows;
+          cam.x = 0;
+          cam.y = 0;
 
-  } else {
-    // Normal mode: viewport is at most VIEW_W×VIEW_H, or smaller if the map itself is smaller
-    cam.w = Math.min(VIEW_W, cols);
-    cam.h = Math.min(VIEW_H, rows);
+      } else {
+          // Normal mode: viewport is at most VIEW_W×VIEW_H
+          cam.w = Math.min(VIEW_W, cols);
+          cam.h = Math.min(VIEW_H, rows);
 
-if (entities && currentplayer) {
-  const p = entities[currentplayer];
+          if (entities && currentplayer && entities[currentplayer]) {
+              const p = entities[currentplayer];
 
-  let targetX = p.x - Math.ceil(cam.w / 2);
- let targetY = p.y - Math.ceil(cam.h / 2);
+              let targetX = p.x - Math.ceil(cam.w / 2);
+              let targetY = p.y - Math.ceil(cam.h / 2);
 
-  // …THEN CLAMP SO WE STAY IN‐BOUNDS…
-  cam.x = Math.max(0, Math.min(targetX, cols - cam.w));
-  cam.y = Math.max(0, Math.min(targetY, rows - cam.h));
-}
+              cam.x = Math.max(0, Math.min(targetX, cols - cam.w));
+              cam.y = Math.max(0, Math.min(targetY, rows - cam.h));
+          }
+      }
+
+      // compute TILE so cam.w × cam.h fits the container
+      const BW = container.clientWidth;
+      const BH = container.clientHeight;
+      TILE = Math.floor(Math.min(BW / cam.w, BH / cam.h));
+
+      const bufW = cam.w * TILE;
+      const bufH = cam.h * TILE;
+      [mapCanvas, entityCanvas, fogCanvas].forEach(c => {
+          c.width  = bufW;
+          c.height = bufH;
+      });
   }
 
-  // Now figure out TILE so cam.w × cam.h fits the container
-  const BW = container.clientWidth;
-  const BH = container.clientHeight;
-  TILE = Math.floor(Math.min(BW / cam.w, BH / cam.h));
 
-  // Finally, set the *buffer* size (canvas.width/height) to match
-  const bufW = cam.w * TILE;
-  const bufH = cam.h * TILE;
-  [mapCanvas, entityCanvas, fogCanvas].forEach(c => {
-    c.width  = bufW;
-    c.height = bufH;
-  });
-}
+  const renderState = {}; // uid -> { x, y }
+  let lastFrameTime = 0;
 
 
+  function applyCam(ctx) {
+      ctx.setTransform(
+          TILE, 0,
+          0, TILE,
+          -(cam.x + cam.subX) * TILE,
+          -(cam.y + cam.subY) * TILE
+      );
+  }
 
-function applyCam(ctx) {
-  ctx.setTransform(
-    TILE, 0,
-    0, TILE,
-    -cam.x * TILE,
-    -cam.y * TILE
-  );
-}
+
+
     function resizeCanvases() {
       const cols = map[0].length, rows = map.length;
       // compute TILE if you want dynamic sizing:
@@ -211,150 +218,274 @@ function applyCam(ctx) {
       // Also remove any setTransform, or adapt your draw calls
     }
 
-function drawBaseMap() {
-     if (!map) return;  
-  mapCtx.resetTransform();
-  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  applyCam(mapCtx);
+  function drawBaseMap() {
+      if (!map) return;
+      mapCtx.resetTransform();
+      mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+      applyCam(mapCtx);
 
-  mapCtx.textAlign    = 'center';
-  mapCtx.textBaseline = 'middle';
+      mapCtx.textAlign    = 'center';
+      mapCtx.textBaseline = 'middle';
 
-  const rows = map.length;
-  const cols = map[0]?.length || 0;
+      const rows = map.length;
+      const cols = map[0]?.length || 0;
 
-  for (let y = cam.y; y < cam.y + cam.h; y++) {
-    for (let x = cam.x; x < cam.x + cam.w; x++) {
-      // SKIP out-of-bounds
-      if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+      const startY = Math.max(0, Math.floor(cam.y));
+      const endY   = Math.min(rows, Math.ceil(cam.y + cam.h));
+      const startX = Math.max(0, Math.floor(cam.x));
+      const endX   = Math.min(cols, Math.ceil(cam.x + cam.w));
 
-      const cell = map[y][x];
+      for (let y = startY; y < endY; y++) {
+          for (let x = startX; x < endX; x++) {
+              const cell = map[y][x];
 
-      // draw floor color
-      mapCtx.fillStyle = cell.color;
-      mapCtx.fillRect(x, y, 1, 1);
+              // floor colour
+              mapCtx.fillStyle = cell.color;
+              mapCtx.fillRect(x, y, 1, 1);
 
-      // ask all rules for a sprite
-      let sprite = null;
-      if (atlasReady) {
-        for (const rule of spriteRules) {
-          const r = rule(cell, x, y);
-          if (r) { sprite = r; break; }
-        }
+              let sprite = null;
+              if (atlasReady) {
+                  for (const rule of spriteRules) {
+                      const r = rule(cell, x, y);
+                      if (r) { sprite = r; break; }
+                  }
+              }
+
+              if (sprite instanceof HTMLImageElement) {
+                  mapCtx.drawImage(sprite, x, y, 1, 1);
+              } else if (Array.isArray(sprite)) {
+                  const [sx, sy] = sprite;
+                  mapCtx.drawImage(
+                      atlas,
+                      sx * 16, sy * 16, 16, 16,
+                      x, y, 1, 1
+                  );
+              } else {
+                  mapCtx.font = `0.8px monospace`;
+                  mapCtx.fillStyle = '#FFF';
+                  mapCtx.fillText(cell.base, x + 0.5, y + 0.5);
+              }
+          }
       }
-
-      if (sprite instanceof HTMLImageElement) {
-        // single‐image sprite
-        mapCtx.drawImage(sprite,
-          x, y, 1, 1
-        );
-      } else if (Array.isArray(sprite)) {
-        // atlas‐based sprite [sx,sy]
-        const [sx,sy] = sprite;
-        mapCtx.drawImage(
-          atlas,
-          sx * 16, sy * 16, 16, 16,
-          x, y, 1, 1
-        );
-      } else {
-        // fallback ASCII
-        mapCtx.font = `0.8px monospace`;
-        mapCtx.fillStyle = '#FFF';
-        mapCtx.fillText(cell.base, x + 0.5, y + 0.5);
-      }
-    }
   }
-}
 
-function drawEntities(playerId = currentplayer) {
-    if (!entities) return;
-  entityCtx.resetTransform();
-  entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
-  applyCam(entityCtx);
+  function stepEntityAnimations(dt) {
+      if (!entities) return;
 
-  entityCtx.textAlign    = 'center';
-  entityCtx.textBaseline = 'middle';
+      const lerpSpeed = 10; // per second
+      const alpha = Math.min(1, dt * lerpSpeed);
 
-  for (const id in entities) {
-    const e  = entities[id];
-    const tx = e.x, ty = e.y;
+      for (const id in entities) {
+          const e   = entities[id];
+          const uid = e.uid || id;
 
-    // 1) DRAW SPRITE OR CHARACTER at (tx,ty)
-    if (atlasReady) {
-      let sprite;
-      for (const rule of spriteRules) {
-        const r = rule({ base: e.char, top: e.top }, tx, ty);
-        if (r) { sprite = r; break; }
+          let targetX, targetY;
+
+          // 1) Prefer world-ish fractional coords if present
+          if (typeof e.renderX === 'number' && typeof e.renderY === 'number') {
+              targetX = e.renderX;
+              targetY = e.renderY;
+          } else if (typeof e.bitX === 'number' && typeof e.bitY === 'number') {
+              targetX = e.bitX / BITS_PER_TILE;
+              targetY = e.bitY / BITS_PER_TILE;
+          } else {
+              // fallback: tile coords
+              targetX = e.x;
+              targetY = e.y;
+          }
+
+          let rs = renderState[uid];
+          if (!rs) {
+              renderState[uid] = { x: targetX, y: targetY };
+              continue;
+          }
+
+          rs.x += (targetX - rs.x) * alpha;
+          rs.y += (targetY - rs.y) * alpha;
       }
-      if (sprite) {
-        const [sx, sy] = sprite;
-        entityCtx.drawImage(
-          atlas,
-          sx * TILE, sy * TILE, TILE, TILE,
-          tx, ty, 1, 1
-        );
-      } else {
-        // fallback ASCII
-        entityCtx.font      = `0.8px monospace`;
-        entityCtx.fillStyle = e.color;
-        entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
+
+      // cleanup
+      for (const id in renderState) {
+          if (!entities[id]) delete renderState[id];
       }
-    } else {
-      // fallback ASCII if atlas not ready
-      entityCtx.font      = `0.8px monospace`;
-      entityCtx.fillStyle = e.color;
-      entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
-    }
+  }
 
-    // 2) DRAW NAME ABOVE for other players
-    if (id !== playerId) {
-      const nameY = ty - 0.3;
-      entityCtx.font      = `0.45px monospace`;
-      entityCtx.fillStyle = e.color;
-      entityCtx.lineWidth   = 0.05;
-      entityCtx.strokeStyle = 'black';
 
-      entityCtx.strokeText(e.name || id, tx + 0.5, nameY);
-      entityCtx.fillText  (e.name || id, tx + 0.5, nameY);
-    }
 
-    // 3) DRAW HEALTH BAR above them (if they have .health)
-    if (e.health && typeof e.health.currentHealth === 'number') {
-      const { currentHealth: cur, maxHealth: max } = e.health;
-      const ratio = Math.max(0, Math.min(cur / max, 1));
+  function getEntityRenderPos(e) {
+      const id = e.uid || e.id;
+      const rs = id && renderState[id];
+      if (rs) return { x: rs.x, y: rs.y };
 
-      // bar dimensions in tile‐units
-      const barW = 0.8, barH = 0.1;
-      const barX = tx + 0.1;
-      let barY = ty - 0.6;
-      if(e.type === 'player') {barY = barY-0.1}
+      if (typeof e.renderX === 'number' && typeof e.renderY === 'number') {
+          return { x: e.renderX, y: e.renderY };
+      }
+      return { x: e.x, y: e.y };
+  }
 
-      // border
-      entityCtx.lineWidth   = 0.02;
-      entityCtx.strokeStyle = '#000';
-      entityCtx.strokeRect(barX, barY, barW, barH);
 
-      // background
-      entityCtx.fillStyle = '#444';
-      entityCtx.fillRect(barX, barY, barW, barH);
 
-      // filled health
-      colour = 'red'
-      if(id === playerId) {colour = 'green'}
-      entityCtx.fillStyle = colour
-      entityCtx.fillRect(barX, barY, barW * ratio, barH);
 
-      // text overlay
-      entityCtx.font         = `0.35px monospace`;
+  const BITS_PER_TILE = 16;
+
+  function drawEntities(playerId = currentplayer) {
+      if (!entities) return;
+
+      entityCtx.resetTransform();
+      entityCtx.clearRect(0, 0, entityCanvas.width, entityCanvas.height);
+
+      const S = 16; // atlas tile size
+
+      // =============== 1) Everyone except the local player ===============
+      // World-space, uses cam.x + cam.subX so the world moves per bit
+      applyCam(entityCtx);
+
       entityCtx.textAlign    = 'center';
-      entityCtx.textBaseline = 'bottom';
-      entityCtx.fillStyle    = '#fff';
-      entityCtx.fillText(`${cur}/${max}`,
-                         tx + 0.5,
-                         barY - 0.01);
-    }
+      entityCtx.textBaseline = 'middle';
+
+      for (const id in entities) {
+          const e = entities[id];
+
+          // we'll draw the local player later in screen space
+          if (id === playerId) continue;
+
+          const { x: tx, y: ty } = getEntityRenderPos(e);
+
+          // skip anything outside the camera window
+          if (tx < cam.x || tx >= cam.x + cam.w || ty < cam.y || ty >= cam.y + cam.h) {
+              continue;
+          }
+
+          // --- sprite / char ---
+          if (atlasReady) {
+              let sprite;
+              for (const rule of spriteRules) {
+                  const r = rule({ base: e.char, top: e.top }, tx, ty);
+                  if (r) { sprite = r; break; }
+              }
+              if (Array.isArray(sprite)) {
+                  const [sx, sy] = sprite;
+                  entityCtx.drawImage(atlas, sx * S, sy * S, S, S, tx, ty, 1, 1);
+              } else {
+                  entityCtx.font      = `0.8px monospace`;
+                  entityCtx.fillStyle = e.color;
+                  entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
+              }
+          } else {
+              entityCtx.font      = `0.8px monospace`;
+              entityCtx.fillStyle = e.color;
+              entityCtx.fillText(e.char, tx + 0.5, ty + 0.5);
+          }
+
+          // --- name label (non-self only, which this always is here) ---
+          const nameY = ty - 0.3;
+          entityCtx.font        = `0.45px monospace`;
+          entityCtx.fillStyle   = e.color;
+          entityCtx.lineWidth   = 0.05;
+          entityCtx.strokeStyle = 'black';
+          entityCtx.strokeText(e.name || id, tx + 0.5, nameY);
+          entityCtx.fillText  (e.name || id, tx + 0.5, nameY);
+
+          // --- health bar ---
+          if (e.health && typeof e.health.currentHealth === 'number') {
+              const { currentHealth: cur, maxHealth: max } = e.health;
+              const ratio = Math.max(0, Math.min(cur / max, 1));
+              const barW = 0.8, barH = 0.1;
+              const barX = tx + 0.1;
+              let barY   = ty - 0.6;
+              if (e.type === 'player') barY -= 0.1;
+
+              entityCtx.lineWidth   = 0.02;
+              entityCtx.strokeStyle = '#000';
+              entityCtx.strokeRect(barX, barY, barW, barH);
+
+              entityCtx.fillStyle = '#444';
+              entityCtx.fillRect(barX, barY, barW, barH);
+
+              entityCtx.fillStyle = 'red';
+              entityCtx.fillRect(barX, barY, barW * ratio, barH);
+
+              entityCtx.font         = `0.35px monospace`;
+              entityCtx.textAlign    = 'center';
+              entityCtx.textBaseline = 'bottom';
+              entityCtx.fillStyle    = '#fff';
+              entityCtx.fillText(`${cur}/${max}`, tx + 0.5, barY - 0.01);
+          }
+      }
+
+      // =============== 2) Local player pinned to the centre ===============
+      if (playerId && entities[playerId]) {
+          const p = entities[playerId];
+
+          // tile-space centre of the current camera window
+          const halfW = Math.floor(cam.w / 2);
+          const halfH = Math.floor(cam.h / 2);
+
+          // screen pixel coordinates of that centre tile
+          const screenX = (halfW + 0.5) * TILE;
+          const screenY = (halfH + 0.5) * TILE;
+
+          // switch to plain pixel space (no camera, no subX/subY)
+          entityCtx.setTransform(1, 0, 0, 1, 0, 0);
+          entityCtx.textAlign    = 'center';
+          entityCtx.textBaseline = 'middle';
+
+          // --- player sprite / char ---
+          if (atlasReady) {
+              let sprite;
+              for (const rule of spriteRules) {
+                  const r = rule({ base: p.char, top: p.top }, p.x, p.y);
+                  if (r) { sprite = r; break; }
+              }
+              if (Array.isArray(sprite)) {
+                  const [sx, sy] = sprite;
+                  entityCtx.drawImage(
+                      atlas,
+                      sx * S, sy * S, S, S,
+                      screenX - TILE / 2, screenY - TILE / 2,
+                      TILE, TILE
+                  );
+              } else {
+                  entityCtx.font      = `${0.8 * TILE}px monospace`;
+                  entityCtx.fillStyle = p.color;
+                  entityCtx.fillText(p.char, screenX, screenY);
+              }
+          } else {
+              entityCtx.font      = `${0.8 * TILE}px monospace`;
+              entityCtx.fillStyle = p.color;
+              entityCtx.fillText(p.char, screenX, screenY);
+          }
+
+          // --- HP bar for the player ---
+          if (p.health && typeof p.health.currentHealth === 'number') {
+              const { currentHealth: cur, maxHealth: max } = p.health;
+              const ratio = Math.max(0, Math.min(cur / max, 1));
+
+              const barW = TILE * 0.8;
+              const barH = TILE * 0.1;
+              const barX = screenX - barW / 2;
+              let   barY = screenY - TILE * 0.6;
+
+              entityCtx.lineWidth   = 2;
+              entityCtx.strokeStyle = '#000';
+              entityCtx.strokeRect(barX, barY, barW, barH);
+
+              entityCtx.fillStyle = '#444';
+              entityCtx.fillRect(barX, barY, barW, barH);
+
+              entityCtx.fillStyle = 'green';
+              entityCtx.fillRect(barX, barY, barW * ratio, barH);
+
+              entityCtx.font         = `${TILE * 0.35}px monospace`;
+              entityCtx.textAlign    = 'center';
+              entityCtx.textBaseline = 'bottom';
+              entityCtx.fillStyle    = '#fff';
+              entityCtx.fillText(`${cur}/${max}`, screenX, barY - 2);
+          }
+      }
   }
-}
+
+
 
 
 
@@ -426,12 +557,40 @@ function drawFog() {
 let highlightPos = null;
 
 
-function renderLoop() {
-  drawEntities();
-  drawFog();
-  drawOverlay();
-  requestAnimationFrame(renderLoop);
-}
+  function renderLoop(ts) {
+      if (!lastFrameTime) lastFrameTime = ts;
+      const dt = (ts - lastFrameTime) / 1000;
+      lastFrameTime = ts;
+
+
+      // 1) tile-based camera follows player
+      updateCameraFromPlayer();
+
+      // 2) sub-tile offset comes from bitOffsetX/bitOffsetY
+      updateBitCameraOffset();
+
+
+      drawEntities();
+      drawFog();
+      drawOverlay();
+
+      requestAnimationFrame(renderLoop);
+  }
+
+  function updateBitCameraOffset() {
+      cam.subX = 0;
+      cam.subY = 0;
+
+      if (!entities || !currentplayer) return;
+      const p = entities[currentplayer];
+      if (!p) return;
+
+      // We just added these on the server
+      if (typeof p.bitOffsetX === 'number') {
+          cam.subX = p.bitOffsetX;              // 0..1 tile
+          cam.subY = p.bitOffsetY || 0;        // usually 0 unless you move vertically by bits
+      }
+  }
 
 // assuming mapCanvas is your <canvas> element
 mapCanvas.addEventListener('mousedown', e => {
@@ -548,32 +707,93 @@ document.addEventListener('keydown', e => {
     socket.emit('wait', { currentplayer });
   }
 });
-    document.addEventListener('keydown', e => {
+  // Movement handling
   const dirMap = {
-    ArrowUp:    'up',
-    ArrowDown:  'down',
-    ArrowLeft:  'left',
-    ArrowRight: 'right'
+      ArrowUp:    { dir: 'up',    dx:  0, dy: -1 },
+      ArrowDown:  { dir: 'down',  dx:  0, dy:  1 },
+      ArrowLeft:  { dir: 'left',  dx: -1, dy:  0 },
+      ArrowRight: { dir: 'right', dx:  1, dy:  0 },
   };
-  const dir = dirMap[e.key];
-  if (!dir) return;
 
-  const pUid = currentplayer
-  if (!pUid) return;
+  const pressedMoveKeys   = new Set();   // e.key values of currently held arrow keys
+  let   lastDirPressed    = null;        // 'up' | 'down' | 'left' | 'right'
+  let   moveLoopId        = null;
+  const MOVE_INTERVAL_MS  = 120;         // tweak: smaller = faster repeat
 
-  if (e.shiftKey) {
-    socket.emit('turn', { dir, currentplayer });
-    socket.emit('commitData');
-    messageSend()
-  } else {
-    const dx = dir==='left' ? -1 : dir==='right' ? 1 : 0;
-    const dy = dir==='up'   ? -1 : dir==='down'  ? 1 : 0;
-    socket.emit('move', { dx, dy, currentplayer });
-    socket.emit('turn', { dir, currentplayer });
-    socket.emit('commitData');
-    messageSend()
+  function computeHeldVector() {
+      let dx = 0, dy = 0;
+      for (const key of pressedMoveKeys) {
+          const info = dirMap[key];
+          if (!info) continue;
+          dx += info.dx;
+          dy += info.dy;
+      }
+      return { dx, dy };
   }
-});
+
+  function doMovementStep() {
+      const pUid = currentplayer;
+      if (!pUid) return;
+
+      const { dx, dy } = computeHeldVector();
+      if (!dx && !dy) return; // either nothing pressed or cancel (e.g. left+right)
+
+      const dir = lastDirPressed || 'down';
+
+      socket.emit('move', { dx, dy, currentplayer: pUid });
+      socket.emit('turn', { dir, currentplayer: pUid });
+      socket.emit('commitData');
+      messageSend();
+  }
+
+  function startMoveLoop() {
+      if (moveLoopId != null) return;
+      moveLoopId = setInterval(() => {
+          if (!pressedMoveKeys.size) {
+              stopMoveLoop();
+              return;
+          }
+          doMovementStep();
+      }, MOVE_INTERVAL_MS);
+  }
+
+  function stopMoveLoop() {
+      if (moveLoopId == null) return;
+      clearInterval(moveLoopId);
+      moveLoopId = null;
+  }
+  // Continuous movement with multiple keys
+  document.addEventListener('keydown', e => {
+      const info = dirMap[e.key];
+      if (!info) return;           // not one of the arrow keys
+      if (!currentplayer) return;
+      if (e.repeat) {
+          // OS key repeat — we handle our own repeat, so ignore
+          e.preventDefault();
+          return;
+      }
+
+      pressedMoveKeys.add(e.key);
+      lastDirPressed = info.dir;
+
+      // Immediate step so it feels responsive
+      doMovementStep();
+      startMoveLoop();
+
+      // Stop page scrolling on arrow keys
+      e.preventDefault();
+  });
+
+  document.addEventListener('keyup', e => {
+      if (!dirMap[e.key]) return;
+
+      pressedMoveKeys.delete(e.key);
+
+      if (!pressedMoveKeys.size) {
+          stopMoveLoop();
+      }
+  });
+
 let loopStarted = false;
 
 socket.on('mapData', data => {
@@ -595,9 +815,35 @@ resizeOverlay();
  // dynamic updates come in via entityData _and_ mapNEntityData
 socket.on('entityData', data => {
   entities = data.list;
+    updateBitCameraOffset();
   updateSelectedItem();
   drawHotbar();
 });
+  function updateCameraFromPlayer() {
+      if (!map || !entities || !currentplayer || !entities[currentplayer]) return;
+
+      const rows = map.length;
+      const cols = map[0]?.length || 0;
+      const p    = entities[currentplayer];
+      if (!p) return;
+
+      // only integer tile coords – NO smoothing here
+      const px = p.x;
+      const py = p.y;
+
+      const halfW = Math.floor(cam.w / 2);
+      const halfH = Math.floor(cam.h / 2);
+
+      let targetX = px - halfW;
+      let targetY = py - halfH;
+
+      // clamp so we don’t scroll past the edges of the 32x32 view
+      targetX = Math.max(0, Math.min(targetX, cols - cam.w));
+      targetY = Math.max(0, Math.min(targetY, rows - cam.h));
+
+      cam.x = targetX;
+      cam.y = targetY;
+  }
 
 
     socket.on('clientPlayer', data => { 
@@ -634,30 +880,31 @@ function assembleBoolMap(newmapinfo, mainmap) {
   }
   return mainmap
 }
-socket.on('mapNEntityData', data => { 
 
 
-entities = data.list
-  seen = entities[currentplayer].seen['overworld']
-  fovMask = entities[currentplayer].fovMask
-map = entities[currentplayer].visibleMap
-if(entities[currentplayer]?.lightMask) {
-lightMask = entities[currentplayer].lightMask
-}
-   resetCamera()
-   drawBaseMap();
-  if (!loopStarted) {
-    loopStarted = true;
-    requestAnimationFrame(renderLoop);
-  }
+  socket.on('mapNEntityData', data => {
 
-      const container = document.getElementById('game-container');
-const cols = 17, rows = 13;           // our fixed viewport
-const CW = container.clientWidth;
-const CH = container.clientHeight;
-const tile = Math.floor(Math.min(CW/cols, CH/rows));
+      // entities in FOV (small projected objects, no visibleMap/seen/FOV stuff here)
+      entities = data.list;
 
-})
+      // map/FOV data comes from data.map.*
+      map       = data.map.map;
+      seen      = data.map.seen;
+      fovMask   = data.map.fovMask;
+      if (data.map.lightMask) {
+          lightMask = data.map.lightMask;
+      }
+
+      updateBitCameraOffset();
+      resetCamera();
+      drawBaseMap();
+
+      if (!loopStarted) {
+          loopStarted = true;
+          requestAnimationFrame(renderLoop);
+      }
+  });
+
 window.addEventListener('resize', () => {
   if (!map) return;
   onResizeOrReset();
@@ -756,16 +1003,20 @@ nextLayer.addEventListener('click', () => {
 });
 
 // Convert a mouse event → tileX/tileY + raw clientX,clientY
-function screenToTile(e) {
-  const rect = mapCanvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
-  // These are in *tiles* because applyCam has scaled context
-  const fx = mx / TILE, fy = my / TILE;
-  const tileX = Math.floor(cam.x + fx);
-  const tileY = Math.floor(cam.y + fy);
-  return { tileX, tileY, clientX: e.clientX, clientY: e.clientY };
-}
+  function screenToTile(e) {
+      const rect = mapCanvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      const fx = mx / TILE;
+      const fy = my / TILE;
+
+      const tileX = Math.floor(cam.x + cam.subX + fx);
+      const tileY = Math.floor(cam.y + cam.subY + fy);
+
+      return { tileX, tileY, clientX: e.clientX, clientY: e.clientY };
+  }
+
 
 function showSideInfo(x, y) {
   // build stack: entities first, then cell

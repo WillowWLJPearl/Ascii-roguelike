@@ -14,6 +14,9 @@ const ENT_FILE   = id => path.join(ENT_DIR, `${id}.json`);
 function ensureDirSync(p)  { if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive:true }); }
 async function ensureDir(p){ await fsp.mkdir(p, { recursive:true }); }
 
+const { compressCellGrid, decompressCellGrid } = require('./cellStorage');
+
+
 function writeJSONSync(file, obj) {
   ensureDirSync(path.dirname(file));
   fs.writeFileSync(file, JSON.stringify(obj));
@@ -34,11 +37,58 @@ async function readJSON(file) {
 
 /* --- chunk APIs (sync reads, either save mode) --- */
 function loadChunkSync(mapId, cx, cy) {
-  return readJSONSync(CHUNK_FILE(mapId, cx, cy));
+    ensureDirSync(CHUNK_DIR(mapId));
+    const file = CHUNK_FILE(mapId, cx, cy);
+    if (!fs.existsSync(file)) return null;
+
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+    // New format: { version: 'cells+refs', x, y, meta, cells: {templates, grid} }
+    if (raw && raw.version === 'cells+refs' && raw.cells) {
+        const data = decompressCellGrid(raw.cells);
+        return { x: raw.x ?? cx, y: raw.y ?? cy, data, meta: raw.meta || {} };
+    }
+
+    // Legacy: raw is directly the chunk { x, y, data, meta }
+    if (Array.isArray(raw.data)) {
+        return raw;
+    }
+
+    // Really old: raw is just the 2D data array
+    if (Array.isArray(raw)) {
+        return { x: cx, y: cy, data: raw, meta: {} };
+    }
+
+    throw new Error('Unknown chunk format in ' + file);
 }
-function saveChunkSync(mapId, cx, cy, data) {
-  writeJSONSync(CHUNK_FILE(mapId, cx, cy), data);
+
+function saveChunkSync(mapId, cx, cy, dataOrChunk) {
+    ensureDirSync(CHUNK_DIR(mapId));
+    const file = CHUNK_FILE(mapId, cx, cy);
+
+    // Accept either {x,y,data,meta} or just data 2D array
+    let data, meta;
+    if (Array.isArray(dataOrChunk)) {
+        data = dataOrChunk;
+        meta = {};
+    } else {
+        data = dataOrChunk.data;
+        meta = dataOrChunk.meta || {};
+    }
+
+    const cells = compressCellGrid(data);
+
+    const payload = {
+        version: 'cells+refs',
+        x: cx,
+        y: cy,
+        meta,
+        cells,
+    };
+
+    fs.writeFileSync(file, JSON.stringify(payload));
 }
+
 function ENTITY_FILE(mapId) {
   return path.join(MAP_DIR(mapId), `entities.json`);
 }

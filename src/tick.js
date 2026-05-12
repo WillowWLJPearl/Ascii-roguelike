@@ -5,6 +5,7 @@ const { getSeenArrayOfChunk, markGlobalSeen } = require('./vision');
 const { calculateRelativeChunk } = require('./maps');
 const { deltas4 } = require('./constants');
 const { ChunkgenPicker, generateMapContentsCircularForChunk } = require('./worldgen');
+const { applyBitMotionForMap } = require('./entities');
 
 let mapData = { map: '', playermovements: 0 };
 
@@ -89,6 +90,7 @@ function ChunkTickPicker(mapID, uid) {
 }
 
 function Tick(mapId) {
+    applyBitMotionForMap(mapId);
   const W = state.chunkWidth, H = state.chunkHeight;
 
   (state.typeIndex['player'] || []).forEach(uid => {
@@ -162,31 +164,44 @@ function Tick(mapId) {
 
 // lightweight sender + revealFOV + assemble are orchestrated here
 function updateMapNEntityData(uid, protocol='noAction') {
-  const e = state.entities[uid];
-  if (!e) return;
-  const io = require('./sockets').ioRef();
-  const { revealFOV, assembleVisibleMaps } = require('./vision');
-  const { trueMappingWithSeenMapping } = require('./maps');
-  const { entitiesInFovDetailed } = require('./entities');
+    const e = state.entities[uid];
+    if (!e) return;
+    const io = require('./sockets').ioRef();
+    const {revealFOV, assembleVisibleMaps} = require('./vision');
+    const {trueMappingWithSeenMapping} = require('./maps');
+    const {entitiesInFovDetailed} = require('./entities');
 
-  revealFOV(uid);
-  assembleVisibleMaps();
+    revealFOV(uid);
+    assembleVisibleMaps();
 
-  if (protocol === 'noAction') {
-    io.to(e.meta.socketId).emit('entityData', { list: entitiesInFovDetailed(uid), changed: uid });
-    io.to(e.meta.socketId).emit('mapData', {
-      map: {
-        lightMask: e.lightMask,
-        trueMapping: trueMappingWithSeenMapping(e.seen, state.maps, e.map),
-        seen: e.seen[e.map],
-        fovMask: e.fovMask,
-        map: e.visibleMap
-      },
-      width: state.chunkWidth, height: state.chunkHeight
-    });
-  } else if (protocol === 'lightweight') {
-    io.to(e.meta.socketId).emit('mapNEntityData', { list: entitiesInFovDetailed(uid), changed: uid });
-  }
+    if (protocol === 'noAction') {
+        io.to(e.meta.socketId).emit('entityData', {list: entitiesInFovDetailed(uid), changed: uid});
+        io.to(e.meta.socketId).emit('mapData', {
+            map: {
+                lightMask: e.lightMask,
+                trueMapping: trueMappingWithSeenMapping(e.seen, state.maps, e.map),
+                seen: e.seen[e.map],
+                fovMask: e.fovMask,
+                map: e.visibleMap
+            },
+            width: state.chunkWidth, height: state.chunkHeight
+        });
+    } else if (protocol === 'lightweight') {
+        io.to(e.meta.socketId).emit('mapNEntityData', {
+            list: entitiesInFovDetailed(uid),
+            changed: uid,
+            map: {
+                map: e.visibleMap,
+                seen: e.seen[e.map],
+                fovMask: e.fovMask,
+                lightMask: e.lightMask
+                // you *can* also send trueMapping here if you actually use it on the client:
+                // trueMapping: trueMappingWithSeenMapping(e.seen, state.maps, e.map)
+            },
+            width: state.chunkWidth,
+            height: state.chunkHeight
+        });
+    }
 }
 
 setInterval(() => {

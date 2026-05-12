@@ -16,13 +16,30 @@ function getChunkByMapId(mapId, cx, cy, generate = true) {
     let chunk = state.maps[mapId].map.chunks.find(c => c.x === cx && c.y === cy);
     if (chunk) return chunk;
 
-    // 2) on disk
+// 2) on disk
     const diskData = storage.loadChunkSync(mapId, cx, cy);
     if (diskData) {
-        chunk = { x: cx, y: cy, data: diskData, meta: diskData.meta || {} };
+        let data, meta;
+
+        if (Array.isArray(diskData)) {
+            // new format: raw 2D grid saved
+            data = diskData;
+            meta = {};
+        } else if (Array.isArray(diskData.data)) {
+            // old format: { x, y, data: [...], meta: {...} }
+            data = diskData.data;
+            meta = diskData.meta || {};
+        } else {
+            // weird fallback, but keeps you from hard-crashing
+            data = diskData;
+            meta = diskData.meta || {};
+        }
+
+        chunk = { x: cx, y: cy, data, meta };
         state.maps[mapId].map.chunks.push(chunk);
         return chunk;
     }
+
 
     // 3) not found
     if (!generate) return null; // <-- IMPORTANT: callers like vision pass false
